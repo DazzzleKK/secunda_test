@@ -1,0 +1,111 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "secunda-test"
+version = "0.1.0"
+description = "Asynchronous payment processing service (test assignment)"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    "dishka>=1.4",
+    "fastapi>=0.115",
+    "faststream[rabbit]>=0.5",
+    "httpx>=0.28",
+    "pydantic>=2.11",
+    "pydantic-settings>=2.7",
+    "sqlalchemy[asyncio]>=2.0,<2.1",
+    "structlog>=24.4",
+    "uvicorn>=0.34",
+]
+
+[dependency-groups]
+dev = [
+    "import-linter>=2.1",
+    "mypy>=1.14",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.9",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/payments", "src/shared"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# `docs/` holds the briefs: their markdown code samples are not project code.
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "C4", "SIM", "RET", "PTH", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["payments", "shared", "tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+
+[tool.importlinter]
+root_packages = ["payments", "shared"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Payments layers"
+type = "layers"
+layers = [
+    "payments.presentation",
+    "payments.infrastructure",
+    "payments.application",
+    "payments.domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "Domain does not depend on infrastructure or frameworks"
+type = "forbidden"
+source_modules = ["payments.domain"]
+forbidden_modules = [
+    "sqlalchemy",
+    "fastapi",
+    "faststream",
+    "pydantic",
+    "httpx",
+    "dishka",
+    "asyncpg",
+    "alembic",
+]
+
+[[tool.importlinter.contracts]]
+name = "Application depends on domain only"
+type = "forbidden"
+source_modules = ["payments.application"]
+forbidden_modules = [
+    "payments.infrastructure",
+    "payments.presentation",
+    "sqlalchemy",
+    "fastapi",
+    "faststream",
+    "pydantic",
+    "httpx",
+    "dishka",
+    "asyncpg",
+    "alembic",
+]
+
+[[tool.importlinter.contracts]]
+name = "Shared kernel does not depend on payments"
+type = "forbidden"
+source_modules = ["shared"]
+forbidden_modules = ["payments"]

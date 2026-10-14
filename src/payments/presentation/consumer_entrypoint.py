@@ -20,7 +20,11 @@ from payments.infrastructure.config import get_settings
 from payments.infrastructure.db.session import build_engine, build_session_factory
 from payments.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from payments.infrastructure.gateway.fake_gateway import FakePaymentGateway
-from payments.infrastructure.messaging.broker import build_broker
+from payments.infrastructure.messaging.broker import (
+    TOPOLOGY_DECLARATION_ATTEMPTS,
+    TOPOLOGY_DECLARATION_PAUSE_SECONDS,
+    build_broker,
+)
 from payments.infrastructure.messaging.consumer import PaymentConsumer
 from payments.infrastructure.messaging.topology import Topology, declare_topology
 from payments.infrastructure.system import SystemClock
@@ -71,7 +75,7 @@ async def main() -> None:
     _install_signal_handlers(stop)
 
     try:
-        await declare_topology(settings.rabbitmq_url, topology)
+        await _declare_topology_with_retry(settings.rabbitmq_url, topology)
         await broker.start()
         logger.info(
             "consumer started",
@@ -86,6 +90,27 @@ async def main() -> None:
         await broker.stop()
         await http_client.aclose()
         await engine.dispose()
+
+
+async def _declare_topology_with_retry(amqp_url: str, topology: Topology) -> None:
+    """Declare the topology, retrying while the broker is not ready yet.
+
+    Compose waits for a healthy broker, but a broker that restarts right after the
+    consumer started would otherwise leave the process without its retry tiers.
+    """
+    last_error: BaseException | None = None
+    for attempt in range(1, TOPOLOGY_DECLARATION_ATTEMPTS + 1):
+        try:
+            await declare_topology(amqp_url, topology)
+            return
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "topology declaration failed",
+                extra={"attempt": attempt, "error": f"{type(exc).__name__}: {exc}"},
+            )
+            await asyncio.sleep(TOPOLOGY_DECLARATION_PAUSE_SECONDS)
+    raise RuntimeError("could not declare the broker topology") from last_error
 
 
 def _install_signal_handlers(stop: asyncio.Event) -> None:

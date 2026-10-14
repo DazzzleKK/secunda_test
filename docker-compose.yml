@@ -1,0 +1,154 @@
+name: secunda-payments
+
+# Container-side settings. They win over `.env`, so `docker compose up` works on a
+# clean checkout: `.env` (copied from `.env.example`) only tunes the values.
+x-app-environment: &app-environment
+  API_KEY: ${API_KEY:-local-dev-api-key}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-payments}:${POSTGRES_PASSWORD:-payments}@postgres:5432/${POSTGRES_DB:-payments}
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_PORT: "5672"
+  RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+  RABBITMQ_VHOST: /
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-100}
+  OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-1000}
+  GATEWAY_SUCCESS_RATE: ${GATEWAY_SUCCESS_RATE:-0.9}
+  GATEWAY_MIN_DELAY_MS: ${GATEWAY_MIN_DELAY_MS:-2000}
+  GATEWAY_MAX_DELAY_MS: ${GATEWAY_MAX_DELAY_MS:-5000}
+  GATEWAY_RANDOM_SEED: ${GATEWAY_RANDOM_SEED:-42}
+  RETRY_DELAYS_MS: ${RETRY_DELAYS_MS:-5000,25000,125000}
+  WEBHOOK_TIMEOUT_SECONDS: ${WEBHOOK_TIMEOUT_SECONDS:-5}
+  WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:-local-dev-signing-secret}
+
+x-app: &app
+  image: secunda-payments:local
+  build:
+    context: .
+  env_file:
+    - path: .env
+      required: false
+  environment: *app-environment
+  restart: unless-stopped
+
+x-app-dependencies: &app-dependencies
+  postgres:
+    condition: service_healthy
+  rabbitmq:
+    condition: service_healthy
+  migrate:
+    condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-payments}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-payments}
+      POSTGRES_DB: ${POSTGRES_DB:-payments}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-payments} -d ${POSTGRES_DB:-payments}
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # Applies the schema exactly once, before the API and the consumer start.
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    command:
+      - uvicorn
+      - --factory
+      - payments.presentation.api.app:create_app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      <<: *app-dependencies
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=3) as answer:
+              sys.exit(0 if answer.status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  consumer:
+    <<: *app
+    command: ["python", "-m", "payments.presentation.consumer_entrypoint"]
+    depends_on:
+      <<: *app-dependencies
+    healthcheck:
+      # The consumer has no port: its liveness is the process itself (PID 1).
+      test: ["CMD-SHELL", "grep -q consumer_entrypoint /proc/1/cmdline"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Local HTTP receiver for the demo: `docker compose --profile demo up -d`.
+  webhook-sink:
+    profiles: ["demo"]
+    image: python:3.12-slim-bookworm
+    command: ["python", "/sink/webhook_sink.py"]
+    environment:
+      SINK_PORT: "9000"
+      WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:-local-dev-signing-secret}
+    volumes:
+      - ./scripts/webhook_sink.py:/sink/webhook_sink.py:ro
+    ports:
+      - "${SINK_PORT:-9000}:9000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          with urllib.request.urlopen("http://127.0.0.1:9000/health", timeout=3) as answer:
+              sys.exit(0 if answer.status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  postgres-data:
+  rabbitmq-data:

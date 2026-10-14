@@ -52,9 +52,7 @@ class FakePaymentGateway(PaymentGatewayProtocol):
 
     async def charge(self, payment: Payment, *, idempotency_key: UUID) -> ChargeResult:
         """Wait for a realistic latency and answer with a terminal outcome."""
-        await asyncio.sleep(
-            self._random.uniform(self._min_delay_seconds, self._max_delay_seconds)
-        )
+        await asyncio.sleep(self._random.uniform(self._min_delay_seconds, self._max_delay_seconds))
         if self._random.random() < self._technical_failure_rate:
             raise PaymentGatewayUnavailableError(idempotency_key, TIMEOUT_REASON)
         if self._random.random() < self._success_rate:

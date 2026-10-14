@@ -12,15 +12,24 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from testcontainers.community.postgres import PostgresContainer
+from testcontainers.core.container import DockerContainer
 
 from payments.infrastructure.config import Settings
 from payments.infrastructure.db.session import build_engine, build_session_factory
 from payments.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from payments.presentation.api.app import create_app
-from tests.integration.helpers import TEST_API_KEY, truncate_all
+from tests.integration.helpers import (
+    TEST_API_KEY,
+    RabbitMq,
+    truncate_all,
+    wait_for_rabbitmq,
+)
 
 POSTGRES_IMAGE = "postgres:16-alpine"
 POSTGRES_PORT = 5432
+RABBITMQ_IMAGE = "rabbitmq:4-management-alpine"
+RABBITMQ_AMQP_PORT = 5672
+RABBITMQ_MANAGEMENT_PORT = 15672
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = PROJECT_ROOT / "alembic.ini"
 
@@ -53,6 +62,23 @@ def postgres_url() -> Iterator[str]:
 def alembic_config(postgres_url: str) -> Config:
     """Alembic config bound to the test database."""
     return build_alembic_config(postgres_url)
+
+
+@pytest.fixture(scope="session")
+def rabbitmq() -> Iterator[RabbitMq]:
+    """Start RabbitMQ once per session and wait until it answers."""
+    with DockerContainer(RABBITMQ_IMAGE).with_exposed_ports(
+        RABBITMQ_AMQP_PORT, RABBITMQ_MANAGEMENT_PORT
+    ) as container:
+        host = container.get_container_host_ip()
+        amqp_port = container.get_exposed_port(RABBITMQ_AMQP_PORT)
+        management_port = container.get_exposed_port(RABBITMQ_MANAGEMENT_PORT)
+        endpoints = RabbitMq(
+            amqp_url=f"amqp://guest:guest@{host}:{amqp_port}/",
+            management_url=f"http://{host}:{management_port}",
+        )
+        wait_for_rabbitmq(endpoints.management_url)
+        yield endpoints
 
 
 @pytest_asyncio.fixture
@@ -96,6 +122,21 @@ async def uow_factory(
 ) -> SqlAlchemyUnitOfWorkFactory:
     """Factory of transactions, as the use cases receive it."""
     return SqlAlchemyUnitOfWorkFactory(session_factory)
+
+
+@pytest.fixture
+def settings_factory():
+    """Build settings for a test without reading any environment file."""
+
+    def build(**overrides: object) -> Settings:
+        values: dict[str, object] = {
+            "api_key": TEST_API_KEY,
+            "database_url": "postgresql+asyncpg://payments:payments@localhost:5432/payments",
+        }
+        values.update(overrides)
+        return Settings(_env_file=None, **values)
+
+    return build
 
 
 @pytest_asyncio.fixture

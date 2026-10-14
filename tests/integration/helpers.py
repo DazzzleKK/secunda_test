@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
@@ -46,6 +50,121 @@ def build_outbox_event(payment: Payment, *, now: datetime = FIXED_NOW) -> Outbox
 
 
 TEST_API_KEY = "test-api-key"
+RABBITMQ_USER = "guest"
+RABBITMQ_PASSWORD = "guest"
+WEBHOOK_SECRET = "integration-signing-secret"
+RABBITMQ_READY_TIMEOUT_SECONDS = 90.0
+POLL_INTERVAL_SECONDS = 0.2
+
+
+@dataclass(frozen=True, slots=True)
+class RabbitMq:
+    """Endpoints of the broker started for the integration tests."""
+
+    amqp_url: str
+    management_url: str
+
+
+def wait_for_rabbitmq(
+    management_url: str, *, timeout: float = RABBITMQ_READY_TIMEOUT_SECONDS
+) -> None:
+    """Block until the management API of the broker answers."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            response = httpx.get(
+                f"{management_url}/api/overview",
+                auth=(RABBITMQ_USER, RABBITMQ_PASSWORD),
+                timeout=2.0,
+                trust_env=False,
+            )
+        except httpx.HTTPError:
+            time.sleep(0.5)
+            continue
+        if response.status_code == 200:
+            return
+        time.sleep(0.5)
+    raise TimeoutError("RabbitMQ management API did not become ready")
+
+
+def queue_document(management_url: str, queue: str) -> dict[str, Any]:
+    """Return the management API description of a queue."""
+    response = httpx.get(
+        f"{management_url}/api/queues/%2F/{queue}",
+        auth=(RABBITMQ_USER, RABBITMQ_PASSWORD),
+        timeout=5.0,
+        trust_env=False,
+    )
+    response.raise_for_status()
+    return dict(response.json())
+
+
+def queue_messages(management_url: str, queue: str) -> int:
+    """Return how many messages a queue currently holds."""
+    return int(queue_document(management_url, queue).get("messages", 0))
+
+
+def queue_bindings(management_url: str, queue: str) -> set[tuple[str, str]]:
+    """Return the `(exchange, routing key)` pairs a queue is bound with."""
+    response = httpx.get(
+        f"{management_url}/api/queues/%2F/{queue}/bindings",
+        auth=(RABBITMQ_USER, RABBITMQ_PASSWORD),
+        timeout=5.0,
+        trust_env=False,
+    )
+    response.raise_for_status()
+    return {
+        (str(binding.get("source", "")), str(binding.get("routing_key", "")))
+        for binding in response.json()
+    }
+
+
+def exchange_document(management_url: str, exchange: str) -> dict[str, Any]:
+    """Return the management API description of an exchange."""
+    response = httpx.get(
+        f"{management_url}/api/exchanges/%2F/{exchange}",
+        auth=(RABBITMQ_USER, RABBITMQ_PASSWORD),
+        timeout=5.0,
+        trust_env=False,
+    )
+    response.raise_for_status()
+    return dict(response.json())
+
+
+def fetch_queue_messages(
+    management_url: str,
+    queue: str,
+    *,
+    count: int = 10,
+) -> list[dict[str, Any]]:
+    """Read messages from a queue without removing them (for assertions)."""
+    response = httpx.post(
+        f"{management_url}/api/queues/%2F/{queue}/get",
+        auth=(RABBITMQ_USER, RABBITMQ_PASSWORD),
+        json={"count": count, "ackmode": "ack_requeue_true", "encoding": "auto"},
+        timeout=5.0,
+        trust_env=False,
+    )
+    response.raise_for_status()
+    return list(response.json())
+
+
+async def wait_for_queue_messages(
+    management_url: str,
+    queue: str,
+    *,
+    minimum: int = 1,
+    timeout: float = 30.0,
+) -> int:
+    """Poll a queue until it holds at least `minimum` messages."""
+    deadline = time.monotonic() + timeout
+    depth = 0
+    while time.monotonic() < deadline:
+        depth = queue_messages(management_url, queue)
+        if depth >= minimum:
+            return depth
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+    return depth
 
 
 def api_headers(
@@ -94,11 +213,21 @@ async def truncate_all(engine: AsyncEngine) -> None:
 
 __all__ = [
     "FIXED_NOW",
+    "RABBITMQ_USER",
     "TEST_API_KEY",
+    "WEBHOOK_SECRET",
+    "RabbitMq",
     "api_headers",
     "build_outbox_event",
     "build_payment",
     "count_rows",
+    "exchange_document",
+    "fetch_queue_messages",
     "payment_body",
+    "queue_bindings",
+    "queue_document",
+    "queue_messages",
     "truncate_all",
+    "wait_for_queue_messages",
+    "wait_for_rabbitmq",
 ]

@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import FrozenInstanceError
 from decimal import Decimal
 
 import pytest
 
 from payments.domain.enums import Currency, PaymentStatus
-from payments.domain.exceptions import InvalidAmountError, PaymentsDomainError
+from payments.domain.exceptions import (
+    InvalidAmountError,
+    InvalidCurrencyError,
+    InvalidIdempotencyKeyError,
+    InvalidWebhookTargetError,
+    PaymentsDomainError,
+)
 from payments.domain.value_objects import (
     MAX_IDEMPOTENCY_KEY_LENGTH,
     IdempotencyKey,
@@ -118,3 +125,45 @@ def test_payment_outcome_rejects_pending_status() -> None:
 def test_payment_outcome_requires_reason_for_failed_status() -> None:
     with pytest.raises(PaymentsDomainError):
         PaymentOutcome(status=PaymentStatus.FAILED)
+
+
+def test_amount_with_more_than_eighteen_digits_is_rejected() -> None:
+    with pytest.raises(InvalidAmountError):
+        Money(amount=Decimal("12345678901234567.00"), currency=Currency.RUB)
+
+
+def test_amount_at_the_precision_limit_is_accepted() -> None:
+    money = Money(amount=Decimal("1234567890123456.00"), currency=Currency.RUB)
+
+    assert money.as_string() == "1234567890123456.00"
+
+
+def test_unsupported_currency_raises_a_dedicated_error() -> None:
+    with pytest.raises(InvalidCurrencyError):
+        Money(amount=Decimal("10.00"), currency="GBP")  # type: ignore[arg-type]
+
+
+def test_invalid_webhook_target_does_not_echo_the_url() -> None:
+    secret_url = "ftp://user:secret@internal.example.com/hook"
+
+    with pytest.raises(InvalidWebhookTargetError) as exc_info:
+        WebhookTarget(secret_url)
+
+    assert exc_info.value.details == {"scheme": "ftp", "has_host": True}
+    assert "secret" not in json.dumps(exc_info.value.details)
+    assert secret_url not in str(exc_info.value)
+
+
+def test_invalid_webhook_target_reports_a_missing_host() -> None:
+    with pytest.raises(InvalidWebhookTargetError) as exc_info:
+        WebhookTarget("https:///no-host")
+
+    assert exc_info.value.details == {"scheme": "https", "has_host": False}
+
+
+def test_idempotency_key_reports_only_its_length() -> None:
+    with pytest.raises(InvalidIdempotencyKeyError) as exc_info:
+        IdempotencyKey("x" * (MAX_IDEMPOTENCY_KEY_LENGTH + 1))
+
+    assert exc_info.value.details == {"idempotency_key_length": MAX_IDEMPOTENCY_KEY_LENGTH + 1}
+    assert "x" not in str(exc_info.value)

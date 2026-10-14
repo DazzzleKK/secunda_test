@@ -8,9 +8,16 @@ from typing import Final
 from urllib.parse import urlparse
 
 from payments.domain.enums import Currency, PaymentStatus
-from payments.domain.exceptions import InvalidAmountError, PaymentsDomainError
+from payments.domain.exceptions import (
+    InvalidAmountError,
+    InvalidCurrencyError,
+    InvalidIdempotencyKeyError,
+    InvalidWebhookTargetError,
+    PaymentsDomainError,
+)
 
 FRACTION_DIGITS: Final[int] = 2
+MAX_AMOUNT_DIGITS: Final[int] = 18
 MAX_IDEMPOTENCY_KEY_LENGTH: Final[int] = 255
 ALLOWED_WEBHOOK_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https"})
 
@@ -33,11 +40,10 @@ class Money:
             raise InvalidAmountError(self.amount)
         if self.amount.as_tuple().exponent != -FRACTION_DIGITS:
             raise InvalidAmountError(self.amount)
+        if len(self.amount.as_tuple().digits) > MAX_AMOUNT_DIGITS:
+            raise InvalidAmountError(self.amount)
         if not isinstance(self.currency, Currency):
-            raise PaymentsDomainError(
-                "currency must be one of RUB, USD, EUR",
-                details={"currency": str(self.currency)},
-            )
+            raise InvalidCurrencyError(self.currency)
 
     def as_string(self) -> str:
         """Return the amount as a plain string with two fraction digits."""
@@ -52,12 +58,12 @@ class WebhookTarget:
 
     def __post_init__(self) -> None:
         if not isinstance(self.url, str):
-            raise PaymentsDomainError("webhook_url must be a string")
+            raise InvalidWebhookTargetError(message="webhook_url must be a string")
         parsed = urlparse(self.url)
         if parsed.scheme not in ALLOWED_WEBHOOK_SCHEMES or not parsed.hostname:
-            raise PaymentsDomainError(
-                "webhook_url must be an absolute http(s) URL with a host",
-                details={"webhook_url": self.url},
+            raise InvalidWebhookTargetError(
+                scheme=parsed.scheme,
+                has_host=bool(parsed.hostname),
             )
 
 
@@ -69,13 +75,10 @@ class IdempotencyKey:
 
     def __post_init__(self) -> None:
         if not isinstance(self.value, str):
-            raise PaymentsDomainError("idempotency_key must be a string")
+            raise InvalidIdempotencyKeyError(message="idempotency_key must be a string")
         length = len(self.value)
         if not 1 <= length <= MAX_IDEMPOTENCY_KEY_LENGTH:
-            raise PaymentsDomainError(
-                f"idempotency_key length must be between 1 and {MAX_IDEMPOTENCY_KEY_LENGTH}",
-                details={"idempotency_key_length": length},
-            )
+            raise InvalidIdempotencyKeyError(length=length)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +105,7 @@ class PaymentOutcome:
 __all__ = [
     "ALLOWED_WEBHOOK_SCHEMES",
     "FRACTION_DIGITS",
+    "MAX_AMOUNT_DIGITS",
     "MAX_IDEMPOTENCY_KEY_LENGTH",
     "IdempotencyKey",
     "Money",

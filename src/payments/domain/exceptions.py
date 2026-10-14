@@ -52,6 +52,76 @@ class InvalidAmountError(PaymentsDomainError):
         self.amount = amount
 
 
+class InvalidCurrencyError(PaymentsDomainError):
+    """The currency is not one of the supported ones."""
+
+    code = "invalid_currency"
+    default_message = "Currency must be one of RUB, USD, EUR"
+
+    def __init__(self, currency: object, message: str | None = None) -> None:
+        super().__init__(message, details={"currency": str(currency)})
+        self.currency = currency
+
+
+class InvalidMetadataError(PaymentsDomainError):
+    """The metadata is not a JSON object or exceeds the size limit."""
+
+    code = "invalid_metadata"
+    default_message = "Metadata must be a JSON object within the size limit"
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        reason: str | None = None,
+        size_bytes: int | None = None,
+        limit_bytes: int | None = None,
+    ) -> None:
+        details: dict[str, Any] = {}
+        if reason is not None:
+            details["reason"] = reason
+        if size_bytes is not None:
+            details["size_bytes"] = size_bytes
+        if limit_bytes is not None:
+            details["limit_bytes"] = limit_bytes
+        super().__init__(message or reason, details=details)
+        self.reason = reason
+
+
+class InvalidWebhookTargetError(PaymentsDomainError):
+    """The webhook URL is not an absolute http(s) URL with a host.
+
+    The URL itself is never echoed back: it may carry credentials in its userinfo
+    part, and `details` reaches the HTTP client.
+    """
+
+    code = "invalid_webhook_url"
+    default_message = "Webhook URL must be an absolute http(s) URL with a host"
+
+    def __init__(
+        self,
+        *,
+        scheme: str = "",
+        has_host: bool = False,
+        message: str | None = None,
+    ) -> None:
+        super().__init__(message, details={"scheme": scheme, "has_host": has_host})
+        self.scheme = scheme
+        self.has_host = has_host
+
+
+class InvalidIdempotencyKeyError(PaymentsDomainError):
+    """The idempotency key is empty, too long or not a string."""
+
+    code = "invalid_idempotency_key"
+    default_message = "Idempotency key length must be between 1 and 255"
+
+    def __init__(self, *, length: int | None = None, message: str | None = None) -> None:
+        details: dict[str, Any] = {} if length is None else {"idempotency_key_length": length}
+        super().__init__(message, details=details)
+        self.length = length
+
+
 class PaymentGatewayUnavailableError(PaymentsDomainError):
     """The payment gateway could not be reached (technical failure, retryable)."""
 
@@ -106,12 +176,32 @@ class PaymentNotFinalizedError(PaymentsDomainError):
         self.payment_id = payment_id
 
 
+class PaymentNotVisibleError(PaymentsDomainError):
+    """The winner of an idempotency race is committed but still unreadable.
+
+    Reported as a retryable conflict: the request was not lost, its result is just
+    not visible to the current transaction yet.
+    """
+
+    code = "payment_not_visible"
+    default_message = "Payment is already stored but not readable yet, retry the request"
+
+    def __init__(self, payment_id: UUID, message: str | None = None) -> None:
+        super().__init__(message, details={"payment_id": str(payment_id)})
+        self.payment_id = payment_id
+
+
 __all__ = [
     "IdempotencyConflictError",
     "InvalidAmountError",
+    "InvalidCurrencyError",
+    "InvalidIdempotencyKeyError",
+    "InvalidMetadataError",
+    "InvalidWebhookTargetError",
     "PaymentGatewayUnavailableError",
     "PaymentNotFinalizedError",
     "PaymentNotFoundError",
+    "PaymentNotVisibleError",
     "PaymentProcessingError",
     "PaymentsDomainError",
     "WebhookDeliveryError",

@@ -9,7 +9,7 @@ from typing import Any, ClassVar, Self
 from uuid import UUID, uuid4
 
 from payments.domain.enums import EventType, PaymentStatus
-from payments.domain.services import build_request_fingerprint
+from payments.domain.services import build_request_fingerprint, canonicalize_metadata
 from payments.domain.value_objects import IdempotencyKey, Money, PaymentOutcome, WebhookTarget
 
 FALLBACK_FAILURE_REASON = "gateway declined the payment without a reason"
@@ -51,15 +51,20 @@ class Payment:
         webhook_target: WebhookTarget,
         now: datetime,
     ) -> Self:
-        """Create a pending payment, deriving its request fingerprint."""
+        """Create a pending payment, deriving its request fingerprint.
+
+        The metadata is frozen once and the same frozen copy feeds both the stored
+        payload and the fingerprint, so the two can never diverge.
+        """
+        frozen_metadata = canonicalize_metadata(metadata)
         return cls(
             id=payment_id,
             money=money,
             description=description,
-            metadata=dict(metadata),
+            metadata=frozen_metadata,
             idempotency_key=idempotency_key.value,
             request_fingerprint=build_request_fingerprint(
-                money, description, metadata, webhook_target.url
+                money, description, frozen_metadata, webhook_target.url
             ),
             webhook_url=webhook_target.url,
             status=PaymentStatus.PENDING,

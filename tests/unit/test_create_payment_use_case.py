@@ -11,7 +11,7 @@ from payments.domain.enums import Currency, EventType, PaymentStatus
 from payments.domain.exceptions import (
     IdempotencyConflictError,
     InvalidAmountError,
-    PaymentProcessingError,
+    PaymentNotVisibleError,
     PaymentsDomainError,
 )
 from payments.domain.services import build_request_fingerprint
@@ -135,7 +135,7 @@ async def test_create_payment_raises_conflict_when_the_insert_hits_the_unique_in
     assert store.outbox == {}
 
 
-async def test_create_payment_reports_a_technical_error_when_the_winner_is_not_readable(
+async def test_create_payment_reports_a_retryable_conflict_when_the_winner_is_not_readable(
     store: FakeStore,
     clock: FakeClock,
     ids: FakeIdGenerator,
@@ -144,12 +144,12 @@ async def test_create_payment_reports_a_technical_error_when_the_winner_is_not_r
     uow_factory = FakeUnitOfWorkFactory(store, clock, blindness=ReadBlindness(remaining=2))
     use_case = CreatePaymentUseCase(uow_factory, clock, ids)
 
-    with pytest.raises(PaymentProcessingError) as exc_info:
+    with pytest.raises(PaymentNotVisibleError) as exc_info:
         await use_case.execute(make_command())
 
     assert len(store.payments) == 1
     assert store.outbox == {}
-    assert exc_info.value.code == "payment_processing_failed"
+    assert exc_info.value.code == "payment_not_visible"
 
 
 @pytest.mark.parametrize("amount", ["0.00", "-5.00", "10.5"])

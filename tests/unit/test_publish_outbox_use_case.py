@@ -94,7 +94,7 @@ async def test_publish_outbox_returns_zero_when_nothing_is_pending(
 
     assert published == 0
     assert publisher.published == []
-    assert uow_factory.commit_count == 1
+    assert uow_factory.commit_count == 0
 
 
 async def test_publish_outbox_honours_the_batch_size(

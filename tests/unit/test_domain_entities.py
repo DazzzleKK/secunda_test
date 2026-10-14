@@ -6,9 +6,12 @@ import json
 from datetime import timedelta
 from uuid import UUID
 
+import pytest
+
 from payments.domain.entities import OutboxEvent
 from payments.domain.enums import EventType, PaymentStatus
-from payments.domain.services import build_request_fingerprint
+from payments.domain.exceptions import InvalidMetadataError
+from payments.domain.services import MAX_METADATA_BYTES, build_request_fingerprint
 from payments.domain.value_objects import PaymentOutcome
 from tests.unit.fakes import FIXED_NOW, make_payment
 
@@ -161,3 +164,39 @@ def test_payment_created_event_payload_survives_json_round_trip() -> None:
 
     assert restored["event"] == "payment.created"
     assert restored["status"] == "pending"
+
+
+def test_mutating_the_source_metadata_does_not_change_the_stored_copy() -> None:
+    source = {"order": {"items": [1, 2]}}
+
+    payment = make_payment(metadata=source)
+    fingerprint = payment.request_fingerprint
+
+    source["order"]["items"].append(3)
+    source["order"]["items"][0] = 999
+
+    assert payment.metadata == {"order": {"items": [1, 2]}}
+    assert payment.request_fingerprint == fingerprint
+
+
+def test_metadata_order_does_not_change_the_stored_representation() -> None:
+    first = make_payment(metadata={"b": 2, "a": 1})
+    second = make_payment(metadata={"a": 1, "b": 2})
+
+    assert first.metadata == second.metadata
+    assert first.request_fingerprint == second.request_fingerprint
+
+
+def test_metadata_over_the_size_limit_is_rejected() -> None:
+    oversized = {"blob": "x" * (MAX_METADATA_BYTES + 1)}
+
+    with pytest.raises(InvalidMetadataError) as exc_info:
+        make_payment(metadata=oversized)
+
+    assert exc_info.value.code == "invalid_metadata"
+    assert exc_info.value.details["limit_bytes"] == MAX_METADATA_BYTES
+
+
+def test_metadata_must_be_json_serialisable() -> None:
+    with pytest.raises(InvalidMetadataError):
+        make_payment(metadata={"when": FIXED_NOW})

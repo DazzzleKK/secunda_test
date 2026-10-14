@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import TracebackType
 from typing import Protocol, Self
 
 from payments.application.ports.outbox_repository import OutboxRepositoryProtocol
@@ -21,7 +22,12 @@ class UnitOfWorkProtocol(Protocol):
         """Open a transaction."""
         ...
 
-    async def __aexit__(self, *exc_info: object) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         """Close the transaction, rolling back unless it was committed."""
         ...
 

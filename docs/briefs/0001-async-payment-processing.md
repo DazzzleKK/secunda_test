@@ -608,7 +608,19 @@ class PaymentResponse(BaseModel):             # 200
 
 | # | Что уточнили | Почему |
 |---|--------------|--------|
-| — | — | — |
+| 1 | Все пять use case'ов перенесены из волн 3–4 в волну 1 | Application — чистый слой без фреймворков: инфраструктурные волны только реализуют порты и не трогают application |
+| 2 | `WebhookDeliveryError` и `PaymentProcessingError` наследуют `PaymentsDomainError` | В §7 brief у них по недосмотру указан `DomainError`; единая база нужна для одного handler'а |
+| 3 | Добавлен `PaymentNotFinalizedError` (code `payment_not_finalized`) | Инвариант «webhook только для финального платежа» — его не было в списке исключений |
+| 4 | `PaymentOutcome.reason` обязателен для `FAILED`, иначе подставляется фиксированный текст | ТЗ требует объяснимую причину отказа, шлюз может её не вернуть |
+| 5 | `ProcessPaymentUseCase` оборачивает `PaymentGatewayUnavailableError` в `PaymentProcessingError` (`from exc`) | Транспортная политика retry различает технический сбой и бизнес-отказ |
+| 6 | `ProcessPaymentResult = {payment_id, status, applied}` | DTO не был описан в §7, только тип возврата |
+| 7 | Нарушения VO `webhook_url`/`idempotency_key` пока дают код `payments_error` | Волна 3 добавляет `InvalidWebhookTargetError`/`InvalidIdempotencyKeyError` и маппинг в 422, иначе такие запросы дадут 500 |
+| 8 | `x-attempt` в заголовке сообщения 0-based (число сделанных попыток), `X-Webhook-Attempt` в payload — 1-based | Явно фиксируем смещение, чтобы не разошлись политика ретраев и наблюдаемость |
+| 9 | `config.py` перенесён из волны 3 в волну 2 | URL БД нужен `migrations/env.py` уже в волне 2 |
+| 10 | `testcontainers[postgres]` в dev-зависимостях | Интеграционные тесты поднимают настоящий PostgreSQL и остаются самодостаточными |
+| 11 | `ruff extend-exclude = ["docs"]` | ruff 0.17 форматирует python-блоки внутри Markdown и покушался на brief |
+| 12 | `include_external_packages = true` в конфиге import-linter | Иначе контракты на внешние модули (sqlalchemy, fastapi) не проверяются |
+| 13 | `make check` дополняется явными командами для Windows | На машине оператора нет `make`; README даёт оба пути |
 
 ## 13. Волны работ
 

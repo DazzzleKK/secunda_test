@@ -33,6 +33,8 @@ class PublishOutboxUseCase:
         published = 0
         async with self._uow_factory() as uow:
             events = await uow.outbox.fetch_unpublished(batch_size)
+            if not events:
+                return 0
             for event in events:
                 try:
                     await self._publisher.publish(event)

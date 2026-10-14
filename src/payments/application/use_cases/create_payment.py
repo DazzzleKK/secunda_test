@@ -9,8 +9,7 @@ from payments.application.ports.clock import ClockProtocol
 from payments.application.ports.id_generator import IdGeneratorProtocol
 from payments.application.ports.unit_of_work import UnitOfWorkFactoryProtocol
 from payments.domain.entities import OutboxEvent, Payment
-from payments.domain.exceptions import IdempotencyConflictError, PaymentProcessingError
-from payments.domain.services import build_request_fingerprint
+from payments.domain.exceptions import IdempotencyConflictError, PaymentNotVisibleError
 from payments.domain.value_objects import IdempotencyKey, Money, WebhookTarget
 
 
@@ -51,14 +50,11 @@ class CreatePaymentUseCase:
             InvalidAmountError: the amount is not a positive two-digit decimal.
             PaymentsDomainError: the idempotency key or the webhook target is invalid.
             IdempotencyConflictError: the key is already used by another payload.
-            PaymentProcessingError: the conflicting row is not readable yet.
+            PaymentNotVisibleError: the conflicting row is not readable yet.
         """
         money = Money(amount=command.amount, currency=command.currency)
         key = IdempotencyKey(command.idempotency_key)
         target = WebhookTarget(command.webhook_url)
-        fingerprint = build_request_fingerprint(
-            money, command.description, command.metadata, target.url
-        )
         now = self._clock.now()
         payment = Payment.create(
             payment_id=self._ids.new_id(),
@@ -69,6 +65,7 @@ class CreatePaymentUseCase:
             webhook_target=target,
             now=now,
         )
+        fingerprint = payment.request_fingerprint
 
         inserted = False
         async with self._uow_factory() as uow:
@@ -89,10 +86,7 @@ class CreatePaymentUseCase:
         async with self._uow_factory() as uow:
             winner = await uow.payments.get_by_idempotency_key(key.value)
         if winner is None:
-            raise PaymentProcessingError(
-                "idempotency key is taken but the row is not readable yet, retry the request",
-                payment_id=payment.id,
-            )
+            raise PaymentNotVisibleError(payment.id)
         return self._resolve(winner, fingerprint)
 
     @staticmethod

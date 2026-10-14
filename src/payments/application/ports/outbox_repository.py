@@ -34,14 +34,14 @@ class OutboxRepositoryProtocol(Protocol):
         event_id: UUID,
         error: str,
         *,
-        permanent: bool = True,
+        permanent: bool = False,
     ) -> None:
         """Record a publication failure.
 
-        `permanent=True` (a payload the broker will never accept) moves the event
-        towards parking; `permanent=False` (the broker is temporarily unreachable,
-        the publish timed out) only records the reason, because the failure is not
-        the event's fault and must not exhaust the attempts.
+        The default is the safe one: an unclassified failure is treated as transient
+        (the broker was unreachable, the publish timed out), so it never exhausts the
+        attempts of a healthy event. Only a failure that can never be fixed by a
+        retry — `permanent=True` — moves the event towards parking.
         """
         ...
 

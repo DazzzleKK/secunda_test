@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -64,6 +65,43 @@ async def test_a_batch_is_published_and_stamped(uow_factory, rabbitmq: RabbitMq)
         rabbitmq.management_url, WORK_QUEUE_NAME, minimum=before + 1
     )
     assert depth >= before + 1
+
+
+async def test_an_unroutable_event_is_not_marked_as_published(
+    uow_factory, rabbitmq: RabbitMq
+) -> None:
+    """A message no queue is bound to must not look published.
+
+    The exchange accepts it and drops it; without `on_return_raises` the publisher
+    confirm would still succeed and the event would be lost for good.
+    """
+    topology = Topology(retry_delays_ms=RETRY_DELAYS_MS)
+    await declare_topology(rabbitmq.amqp_url, topology)
+    payment = build_payment(idempotency_key="relay-unroutable")
+    event = replace(build_outbox_event(payment), routing_key="payments.nowhere")
+
+    async with uow_factory() as uow:
+        await uow.payments.add_if_absent(payment)
+        await uow.outbox.add(event)
+        await uow.commit()
+
+    broker = build_broker(rabbitmq.amqp_url)
+    await broker.start()
+    try:
+        published = await PublishOutboxUseCase(
+            uow_factory, RabbitEventPublisher(broker, topology), SystemClock()
+        ).execute(batch_size=10)
+    finally:
+        await broker.stop()
+
+    assert published == 0
+    async with uow_factory() as uow:
+        pending = await uow.outbox.fetch_unpublished(10)
+
+    assert [item.id for item in pending] == [event.id]
+    assert pending[0].published_at is None
+    assert pending[0].attempts == 0
+    assert pending[0].last_error is not None
 
 
 async def test_the_loop_stops_on_request_and_publishes_what_it_finds(

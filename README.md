@@ -251,8 +251,9 @@ uv run alembic upgrade head
 | `LOG_LEVEL` | `INFO` | уровень логирования |
 
 **Подпись вебхука:** `X-Webhook-Signature: HMAC-SHA256(secret, raw_body)` в hex,
-плюс `X-Webhook-Id` (id события) и `X-Webhook-Attempt` (номер попытки). Пример
-проверки — `scripts/webhook_sink.py`.
+плюс `X-Webhook-Id` (id события — по нему получатель отличает повторную доставку
+от нового события) и `X-Webhook-Attempt` (номер попытки). Пример проверки —
+`scripts/webhook_sink.py`.
 
 ---
 

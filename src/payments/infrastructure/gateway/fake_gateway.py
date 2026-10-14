@@ -25,8 +25,10 @@ class FakePaymentGateway(PaymentGatewayProtocol):
 
     Latency, success rate and technical failure rate are configurable and the
     random generator is seeded, so tests get a deterministic sequence of outcomes
-    instead of real randomness. A declined charge is returned as a business
-    result; only a technical failure is raised, and only that one is retryable.
+    instead of real randomness. The decision of an idempotency key is remembered:
+    a retried charge returns the same result instead of charging twice. A declined
+    charge is returned as a business result; only a technical failure is raised,
+    and only that one is retryable.
     """
 
     def __init__(
@@ -49,15 +51,30 @@ class FakePaymentGateway(PaymentGatewayProtocol):
         self._min_delay_seconds = min_delay_ms / 1000
         self._max_delay_seconds = max_delay_ms / 1000
         self._random = random.Random(seed)
+        self._decisions: dict[UUID, ChargeResult] = {}
 
     async def charge(self, payment: Payment, *, idempotency_key: UUID) -> ChargeResult:
-        """Wait for a realistic latency and answer with a terminal outcome."""
+        """Answer with a terminal outcome, the same one for the same idempotency key.
+
+        The real gateway keeps the decision of a key it has already seen, and so does
+        this emulator: a redelivered event must not charge the customer twice or turn
+        an approved charge into a decline. Only business outcomes are remembered — a
+        technical failure stays retryable.
+        """
+        remembered = self._decisions.get(idempotency_key)
+        if remembered is not None:
+            return remembered
+
         await asyncio.sleep(self._random.uniform(self._min_delay_seconds, self._max_delay_seconds))
         if self._random.random() < self._technical_failure_rate:
             raise PaymentGatewayUnavailableError(idempotency_key, TIMEOUT_REASON)
-        if self._random.random() < self._success_rate:
-            return ChargeResult(approved=True)
-        return ChargeResult(approved=False, reason=DECLINE_REASON)
+        decision = (
+            ChargeResult(approved=True)
+            if self._random.random() < self._success_rate
+            else ChargeResult(approved=False, reason=DECLINE_REASON)
+        )
+        self._decisions[idempotency_key] = decision
+        return decision
 
 
 __all__ = ["DECLINE_REASON", "TIMEOUT_REASON", "FakePaymentGateway"]

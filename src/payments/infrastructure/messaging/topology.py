@@ -9,11 +9,18 @@ in the handler and no per-message TTL (which would block the head of the queue).
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Final
 
 import aio_pika
 from faststream.rabbit import Channel, ExchangeType, RabbitExchange, RabbitQueue
+
+logger = logging.getLogger(__name__)
+
+TOPOLOGY_DECLARATION_ATTEMPTS: Final[int] = 5
+TOPOLOGY_DECLARATION_PAUSE_SECONDS: Final[float] = 2.0
 
 EXCHANGE_NAME: Final[str] = "payments"
 RETRY_EXCHANGE_NAME: Final[str] = "payments.retry"
@@ -157,6 +164,37 @@ async def declare_topology(amqp_url: str, topology: Topology) -> None:
         await connection.close()
 
 
+async def declare_topology_with_retry(
+    amqp_url: str,
+    topology: Topology,
+    *,
+    attempts: int = TOPOLOGY_DECLARATION_ATTEMPTS,
+    pause_seconds: float = TOPOLOGY_DECLARATION_PAUSE_SECONDS,
+) -> None:
+    """Declare the topology, retrying while the broker is not ready yet.
+
+    Every process that publishes calls this before its first publish: an exchange
+    with no bound queue accepts and drops messages, so the publisher must not rely
+    on the consumer having declared the topology first.
+    """
+    last_error: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            await declare_topology(amqp_url, topology)
+            return
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "topology declaration failed (%s/%s): %s: %s",
+                attempt,
+                attempts,
+                type(exc).__name__,
+                exc,
+            )
+            await asyncio.sleep(pause_seconds)
+    raise RuntimeError("could not declare the broker topology") from last_error
+
+
 __all__ = [
     "ATTEMPT_HEADER",
     "DLQ_NAME",
@@ -167,4 +205,5 @@ __all__ = [
     "RetryTarget",
     "Topology",
     "declare_topology",
+    "declare_topology_with_retry",
 ]

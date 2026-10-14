@@ -59,15 +59,34 @@ async def test_the_same_seed_produces_the_same_sequence() -> None:
     second = _gateway(success_rate=0.5)
 
     first_results = [
-        await first.charge(make_payment(), idempotency_key=PAYMENT_ID) for _ in range(5)
+        await first.charge(make_payment(), idempotency_key=UUID(int=index + 1))
+        for index in range(5)
     ]
     second_results = [
-        await second.charge(make_payment(), idempotency_key=PAYMENT_ID) for _ in range(5)
+        await second.charge(make_payment(), idempotency_key=UUID(int=index + 1))
+        for index in range(5)
     ]
 
     assert [result.approved for result in first_results] == [
         result.approved for result in second_results
     ]
+
+
+async def test_the_same_idempotency_key_returns_the_same_decision() -> None:
+    gateway = _gateway(success_rate=0.5)
+
+    first = await gateway.charge(make_payment(), idempotency_key=PAYMENT_ID)
+    second = await gateway.charge(make_payment(), idempotency_key=PAYMENT_ID)
+
+    assert second == first
+
+
+async def test_an_approved_charge_is_never_turned_into_a_decline() -> None:
+    gateway = _gateway(success_rate=1.0)
+
+    decisions = [await gateway.charge(make_payment(), idempotency_key=PAYMENT_ID) for _ in range(3)]
+
+    assert all(decision.approved for decision in decisions)
 
 
 @pytest.mark.parametrize(

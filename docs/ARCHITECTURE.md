@@ -44,8 +44,8 @@ uv run lint-imports     # 4 контракта: слои, domain без фрей
 | Новый сценарий («создать платёж», «отправить webhook») | `application/use_cases/` | `CreatePaymentUseCase.execute` |
 | Обратиться к БД, брокеру, внешнему API | `infrastructure/` за портом из `application/ports/` | `SqlAlchemyPaymentRepository`, `HttpWebhookSender` |
 | Новый HTTP-эндпоинт | `presentation/api/routers/` + схема в `schemas.py` | `create_payment` |
-| Маппинг доменной ошибки в HTTP | `presentation/api/error_handlers.py` | `DOMAIN_CODE_TO_HTTP` |
-| Политика ack/nack/retry сообщения | `presentation/consumer_entrypoint.py` (subscriber) | `_handle_failure` |
+| Маппинг доменной ошибки в HTTP | `presentation/api/errors.py` | `DOMAIN_CODE_TO_HTTP` |
+| Политика ack/nack/retry сообщения | `infrastructure/messaging/consumer.py` (транспортный слой), вызов — `presentation/consumer_entrypoint.py` | `_retry`, `_park` |
 | Настройка окружения | `infrastructure/config.py` | `Settings` |
 
 Правило простое: **решение** — в domain/application, **доступ к внешнему миру** — в
@@ -136,10 +136,16 @@ sequenceDiagram
 не рвёт heartbeat. Тиры вместо одной очереди с per-message TTL — потому что
 RabbitMQ смотрит TTL только у головы очереди (head-of-line blocking).
 
-Попытка считается в собственном заголовке `x-attempt` (0-based), `x-death`
-используется как внешняя сверка. `requeue=True` не используется нигде: это
-бесконечный цикл на poison-сообщении. Аргументы очереди неизменяемы, поэтому
-смена `RETRY_DELAYS_MS` требует пересоздания очередей.
+Попытка считается в собственном заголовке `x-attempt` (0-based): он переносится
+между тирами вместе с сообщением. `x-death` брокера не используется — его
+содержимое зависит от топологии, а политика должна быть воспроизводимой в тестах.
+`requeue=True` не используется нигде: это бесконечный цикл на poison-сообщении.
+Аргументы очереди неизменяемы, поэтому смена `RETRY_DELAYS_MS` требует
+пересоздания очередей (иначе consumer падает на объявлении топологии — это видно
+по healthcheck'у).
+
+Публикация идёт с `mandatory=True` и `on_return_raises=True`: сообщение, которому
+не нашлось очереди, не считается опубликованным и остаётся в outbox.
 
 Что ретраится и что нет:
 
@@ -178,7 +184,7 @@ Vendor-исключения переводятся в доменные **в ад
 
 | Процесс | Команда | Что делает |
 |---|---|---|
-| API | `uvicorn payments.presentation.api.app:app` | два эндпоинта, `/health`, `/ready`, встроенный outbox relay |
+| API | `uvicorn --factory payments.presentation.api.app:create_app` | два эндпоинта, `/health`, `/ready`, встроенный outbox relay |
 | Consumer | `python -m payments.presentation.consumer_entrypoint` | слушает `payments.new`, обрабатывает платёж и webhook |
 | Relay (standalone) | `python -m payments.infrastructure.messaging.outbox_relay` | публикация outbox, когда API вынесен отдельно |
 | Миграции | `alembic upgrade head` | схема БД |

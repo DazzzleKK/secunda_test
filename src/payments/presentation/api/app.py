@@ -20,11 +20,19 @@ from fastapi import FastAPI
 from payments.infrastructure.config import Settings, get_settings
 from payments.infrastructure.messaging.broker import build_broker
 from payments.infrastructure.messaging.outbox_relay import OutboxRelay
+from payments.infrastructure.messaging.topology import (
+    Topology,
+    declare_topology_with_retry,
+)
 from payments.presentation.api.errors import register_exception_handlers
 from payments.presentation.api.providers import AppProvider
 from payments.presentation.api.routers import health, payments
 
 logger = logging.getLogger(__name__)
+
+API_TOPOLOGY_ATTEMPTS = 3
+API_TOPOLOGY_PAUSE_SECONDS = 1.0
+RELAY_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 DESCRIPTION = """
 Asynchronous payment processing service.
@@ -47,6 +55,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         stop = asyncio.Event()
         relay_task: asyncio.Task[None] | None = None
+        topology = Topology(retry_delays_ms=resolved_settings.retry_delays_ms)
+        try:
+            # The publisher declares the topology itself: a message sent to an
+            # exchange with no bound queue would be dropped, and the consumer may
+            # not be running at all.
+            await declare_topology_with_retry(
+                resolved_settings.rabbitmq_url,
+                topology,
+                attempts=API_TOPOLOGY_ATTEMPTS,
+                pause_seconds=API_TOPOLOGY_PAUSE_SECONDS,
+            )
+        except Exception:
+            logger.exception("broker topology is not ready; the outbox keeps the events")
         try:
             await broker.start()
         except Exception:
@@ -58,9 +79,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             stop.set()
             if relay_task is not None:
-                relay_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await relay_task
+                # Let the loop finish the batch it is publishing before cancelling.
+                try:
+                    await asyncio.wait_for(relay_task, timeout=RELAY_SHUTDOWN_TIMEOUT_SECONDS)
+                except TimeoutError:
+                    relay_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await relay_task
             await broker.stop()
             await container.close()
 

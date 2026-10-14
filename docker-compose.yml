@@ -17,7 +17,7 @@ x-app-environment: &app-environment
   GATEWAY_MIN_DELAY_MS: ${GATEWAY_MIN_DELAY_MS:-2000}
   GATEWAY_MAX_DELAY_MS: ${GATEWAY_MAX_DELAY_MS:-5000}
   GATEWAY_RANDOM_SEED: ${GATEWAY_RANDOM_SEED:-42}
-  RETRY_DELAYS_MS: ${RETRY_DELAYS_MS:-5000,25000,125000}
+  RETRY_DELAYS_MS: ${RETRY_DELAYS_MS:-5000,25000}
   WEBHOOK_TIMEOUT_SECONDS: ${WEBHOOK_TIMEOUT_SECONDS:-5}
   WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:-local-dev-signing-secret}
 
@@ -117,12 +117,12 @@ services:
     depends_on:
       <<: *app-dependencies
     healthcheck:
-      # The consumer has no port: its liveness is the process itself (PID 1).
-      test: ["CMD-SHELL", "grep -q consumer_entrypoint /proc/1/cmdline"]
+      # Readiness file, not a process check: a crash loop must not look healthy.
+      test: ["CMD-SHELL", "test -f /tmp/payments-consumer-ready"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
   # Local HTTP receiver for the demo: `docker compose --profile demo up -d`.
   webhook-sink:

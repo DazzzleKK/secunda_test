@@ -210,7 +210,7 @@ class SqlAlchemyOutboxRepository(OutboxRepositoryProtocol):
         event_id: UUID,
         error: str,
         *,
-        permanent: bool = True,
+        permanent: bool = False,
     ) -> None:
         """Record a publication failure without losing the row.
 

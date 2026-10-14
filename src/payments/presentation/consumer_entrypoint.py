@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
+import tempfile
+from pathlib import Path
 from types import FrameType
 
 import httpx
@@ -20,23 +23,28 @@ from payments.infrastructure.config import get_settings
 from payments.infrastructure.db.session import build_engine, build_session_factory
 from payments.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from payments.infrastructure.gateway.fake_gateway import FakePaymentGateway
-from payments.infrastructure.messaging.broker import (
-    TOPOLOGY_DECLARATION_ATTEMPTS,
-    TOPOLOGY_DECLARATION_PAUSE_SECONDS,
-    build_broker,
-)
+from payments.infrastructure.messaging.broker import build_broker
 from payments.infrastructure.messaging.consumer import PaymentConsumer
-from payments.infrastructure.messaging.topology import Topology, declare_topology
+from payments.infrastructure.messaging.topology import (
+    Topology,
+    declare_topology_with_retry,
+)
 from payments.infrastructure.system import SystemClock
 from payments.infrastructure.webhook.http_sender import HttpWebhookSender
 
 logger = logging.getLogger(__name__)
+
+READINESS_FILE_ENV = "CONSUMER_READINESS_FILE"
+READINESS_FILE_NAME = "payments-consumer-ready"
 
 
 async def main() -> None:
     """Run the consumer until the process is asked to stop."""
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
+
+    readiness = readiness_path()
+    readiness.unlink(missing_ok=True)
 
     topology = Topology(retry_delays_ms=settings.retry_delays_ms)
     engine = build_engine(settings.sqlalchemy_url)
@@ -77,40 +85,41 @@ async def main() -> None:
     try:
         await _declare_topology_with_retry(settings.rabbitmq_url, topology)
         await broker.start()
+        readiness.touch()
         logger.info(
-            "consumer started",
-            extra={
-                "retry_delays_ms": list(settings.retry_delays_ms),
-                "max_attempts": topology.max_attempts,
-            },
+            "consumer started: retry_delays_ms=%s max_attempts=%s",
+            list(settings.retry_delays_ms),
+            topology.max_attempts,
         )
         await stop.wait()
     finally:
         logger.info("consumer stopping")
+        readiness.unlink(missing_ok=True)
         await broker.stop()
         await http_client.aclose()
         await engine.dispose()
 
 
-async def _declare_topology_with_retry(amqp_url: str, topology: Topology) -> None:
-    """Declare the topology, retrying while the broker is not ready yet.
+def readiness_path() -> Path:
+    """File the container healthcheck looks at, written once consuming really works.
 
-    Compose waits for a healthy broker, but a broker that restarts right after the
-    consumer started would otherwise leave the process without its retry tiers.
+    A process check (`grep /proc/1/cmdline`) would report a crash loop as healthy;
+    the file is only created after the topology is declared and the broker started.
     """
-    last_error: BaseException | None = None
-    for attempt in range(1, TOPOLOGY_DECLARATION_ATTEMPTS + 1):
-        try:
-            await declare_topology(amqp_url, topology)
-            return
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "topology declaration failed",
-                extra={"attempt": attempt, "error": f"{type(exc).__name__}: {exc}"},
-            )
-            await asyncio.sleep(TOPOLOGY_DECLARATION_PAUSE_SECONDS)
-    raise RuntimeError("could not declare the broker topology") from last_error
+    configured = os.environ.get(READINESS_FILE_ENV)
+    if configured:
+        return Path(configured)
+    return Path(tempfile.gettempdir()) / READINESS_FILE_NAME
+
+
+async def _declare_topology_with_retry(amqp_url: str, topology: Topology) -> None:
+    """Declare the topology before consuming; queue arguments are immutable.
+
+    A changed `RETRY_DELAYS_MS` needs recreated queues: the retry only outlives a
+    slow broker start, then the process fails loudly instead of consuming without
+    its retry tiers.
+    """
+    await declare_topology_with_retry(amqp_url, topology)
 
 
 def _install_signal_handlers(stop: asyncio.Event) -> None:

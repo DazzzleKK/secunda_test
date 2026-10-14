@@ -279,7 +279,7 @@ class FakeOutboxRepository(OutboxRepositoryProtocol):
         event_id: UUID,
         error: str,
         *,
-        permanent: bool = True,
+        permanent: bool = False,
     ) -> None:
         """Store the error; only a permanent failure bumps the attempts."""
         stored = self._store.outbox.get(event_id)

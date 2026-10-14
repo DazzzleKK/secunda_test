@@ -118,7 +118,7 @@ async def test_register_failure_keeps_the_event_retryable(uow_factory) -> None:
         await uow.commit()
 
     async with uow_factory() as uow:
-        await uow.outbox.register_failure(event.id, "broker is down")
+        await uow.outbox.register_failure(event.id, "broker is down", permanent=True)
         await uow.commit()
 
     async with uow_factory() as uow:

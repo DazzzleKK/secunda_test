@@ -20,12 +20,17 @@ from payments.infrastructure.db.session import build_engine, build_session_facto
 from payments.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from payments.infrastructure.messaging.broker import build_broker
 from payments.infrastructure.messaging.publisher import RabbitEventPublisher
-from payments.infrastructure.messaging.topology import Topology
+from payments.infrastructure.messaging.topology import (
+    Topology,
+    declare_topology_with_retry,
+)
 from payments.infrastructure.system import SystemClock
 
 logger = logging.getLogger(__name__)
 
 ERROR_RETRY_PAUSE_SECONDS: Final[float] = 5.0
+STANDALONE_TOPOLOGY_ATTEMPTS: Final[int] = 3
+STANDALONE_TOPOLOGY_PAUSE_SECONDS: Final[float] = 1.0
 
 
 class OutboxRelay:
@@ -70,14 +75,26 @@ async def main() -> None:
 
     engine = build_engine(settings.sqlalchemy_url)
     broker = build_broker(settings.rabbitmq_url)
+    topology = Topology(retry_delays_ms=settings.retry_delays_ms)
     stop = asyncio.Event()
     _install_signal_handlers(stop)
 
     try:
+        try:
+            # The relay publishes, so it declares the topology itself: sending to an
+            # exchange with no bound queue would drop the message silently.
+            await declare_topology_with_retry(
+                settings.rabbitmq_url,
+                topology,
+                attempts=STANDALONE_TOPOLOGY_ATTEMPTS,
+                pause_seconds=STANDALONE_TOPOLOGY_PAUSE_SECONDS,
+            )
+        except Exception:
+            logger.exception("broker topology is not ready; the outbox keeps the events")
         await broker.start()
         use_case = PublishOutboxUseCase(
             SqlAlchemyUnitOfWorkFactory(build_session_factory(engine)),
-            RabbitEventPublisher(broker, Topology(retry_delays_ms=settings.retry_delays_ms)),
+            RabbitEventPublisher(broker, topology),
             SystemClock(),
         )
         logger.info("standalone outbox relay started")

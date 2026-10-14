@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     gateway_max_delay_ms: int = 5000
     gateway_random_seed: int | None = 42
 
-    retry_delays_ms: RetryDelays = (5000, 25000, 125000)
+    retry_delays_ms: RetryDelays = (5000, 25000)
 
     webhook_timeout_seconds: float = 5.0
     webhook_signing_secret: str = "change-me"

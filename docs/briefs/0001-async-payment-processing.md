@@ -559,42 +559,47 @@ class PaymentResponse(BaseModel):             # 200
 
 ## 10. Критерии готовности
 
+Проверено 2026-10-14 на чистом стеке: `docker compose --profile demo down -v` →
+`up -d --build --wait` (код 0, все healthcheck'и зелёные) → `scripts/demo.py` 8/8 PASS;
+полный прогон `ruff format --check` + `ruff check` + `mypy src` + `lint-imports` + `pytest`
+— 228 passed (157 unit + 71 integration).
+
 **Волна 1 — скелет, домен, порты**
-- [ ] `uv sync`, `ruff check`, `ruff format --check`, `mypy --strict src` — без ошибок
-- [ ] `lint-imports` (import-linter) проходит: domain/application не зависят от внешних слоёв
-- [ ] Unit-тесты домена: инварианты Money/IdempotencyKey/WebhookTarget, переходы статусов, `OutboxEvent.payment_created`
+- [x] `uv sync`, `ruff check`, `ruff format --check`, `mypy --strict src` — без ошибок
+- [x] `lint-imports` (import-linter) проходит: domain/application не зависят от внешних слоёв
+- [x] Unit-тесты домена: инварианты Money/IdempotencyKey/WebhookTarget, переходы статусов, `OutboxEvent.payment_created`
 
 **Волна 2 — персистентность**
-- [ ] `payments` и `outbox` создаются одной миграцией Alembic (`alembic upgrade head` на пустой БД)
-- [ ] `downgrade` работает
-- [ ] Тест `add_if_absent` → False на повторе, `apply_outcome` → False на повторном переходе
-- [ ] `fetch_unpublished` не отдаёт одну строку двум параллельным relay (тест на `SKIP LOCKED`)
+- [x] `payments` и `outbox` создаются одной миграцией Alembic (`alembic upgrade head` на пустой БД)
+- [x] `downgrade` работает
+- [x] Тест `add_if_absent` → False на повторе, `apply_outcome` → False на повторном переходе
+- [x] `fetch_unpublished` не отдаёт одну строку двум параллельным relay (тест на `SKIP LOCKED`)
 
 **Волна 3 — API**
-- [ ] Интеграционные тесты: 202 / 202-replay / 409 / 200 / 404 / 401 / 422, формат `ErrorEnvelope`
-- [ ] `/health` и `/ready` отвечают ожидаемо (ready = 503 при мёртвой БД)
-- [ ] OpenAPI (`/docs`) описывает `X-API-Key` и `Idempotency-Key`
+- [x] Интеграционные тесты: 202 / 202-replay / 409 / 200 / 404 / 401 / 422, формат `ErrorEnvelope`
+- [x] `/health` и `/ready` отвечают ожидаемо (ready = 503 при мёртвой БД)
+- [x] OpenAPI (`/docs`) описывает `X-API-Key` и `Idempotency-Key`
 
 **Волна 4 — брокер, consumer, outbox, webhook**
-- [ ] Топология объявляется идемпотентно при старте consumer'а; повторный старт не падает
-- [ ] Атрибуты очередей проверены через management API: `durable`, TTL тиров, DLX-аргументы
-- [ ] E2E на реальных Postgres+RabbitMQ: платёж доходит до `succeeded`, webhook получен локальным sink'ом
-- [ ] Детерминированная эмуляция (seed/настраиваемая вероятность): 10% → `failed` + webhook
-- [ ] Брокер недоступен в момент создания: POST отдаёт 202, строка `outbox` ждёт, после подъёма брокера событие публикуется (доказательство outbox)
-- [ ] Технический сбой → 3 попытки с ростом задержки → ровно одно сообщение в `payments.dlq` с `x-error`/`x-attempt`
-- [ ] Sink падает дважды и отдаёт 200 на третий раз → платёж `succeeded`, webhook доставлен (проверка ladder'а)
-- [ ] Дубль доставки не приводит к повторному списанию и повторному webhook'у
-- [ ] HMAC-подпись webhook'а проверяется тестом
-- [ ] `webhook-sink` для локальной демонстрации (профиль `demo`), не влияет на базовый `docker compose up`
+- [x] Топология объявляется идемпотентно при старте consumer'а; повторный старт не падает
+- [x] Атрибуты очередей проверены через management API: `durable`, TTL тиров, DLX-аргументы
+- [x] E2E на реальных Postgres+RabbitMQ: платёж доходит до `succeeded`, webhook получен локальным sink'ом
+- [x] Детерминированная эмуляция (seed/настраиваемая вероятность): 10% → `failed` + webhook
+- [x] Брокер недоступен в момент создания: POST отдаёт 202, строка `outbox` ждёт, после подъёма брокера событие публикуется (доказательство outbox)
+- [x] Технический сбой → 3 попытки с ростом задержки → ровно одно сообщение в `payments.dlq` с `x-error`/`x-attempt`
+- [x] Sink падает дважды и отдаёт 200 на третий раз → платёж `succeeded`, webhook доставлен (проверка ladder'а)
+- [x] Дубль доставки не приводит к повторному списанию и повторному webhook'у
+- [x] HMAC-подпись webhook'а проверяется тестом
+- [x] `webhook-sink` для локальной демонстрации (профиль `demo`), не влияет на базовый `docker compose up`
 
 **Волна 5 — Docker, документация, финальная проверка**
-- [ ] `docker compose down -v && docker compose up -d --wait` поднимает всё с нуля; healthcheck'и проходят
-- [ ] `scripts/demo` прогоняет 7 сценариев из карты критериев и печатает результат
-- [ ] README: запуск, примеры curl, таблица «критерий → где смотреть в коде», ограничения, путь масштабирования
-- [ ] `docs/ARCHITECTURE.md`: схема слоёв, направление зависимостей, поток платежа, таблица «куда класть логику»
-- [ ] ADR с тремя ключевыми решениями: outbox вместо dual-write, retry-тиры вместо sleep, идемпотентность через ON CONFLICT
-- [ ] Полный прогон `make check` (lint + mypy + import-linter + tests) зелёный
-- [ ] Ревью всего diff (`layer-reviewer`) — Critical закрыты
+- [x] `docker compose down -v && docker compose up -d --wait` поднимает всё с нуля; healthcheck'и проходят
+- [x] `scripts/demo` прогоняет сценарии из карты критериев и печатает результат (сейчас 8)
+- [x] README: запуск, примеры curl, таблица «критерий → где смотреть в коде», ограничения, путь масштабирования
+- [x] `docs/ARCHITECTURE.md`: схема слоёв, направление зависимостей, поток платежа, таблица «куда класть логику»
+- [x] ADR с тремя ключевыми решениями: outbox вместо dual-write, retry-тиры вместо sleep, идемпотентность через ON CONFLICT
+- [x] Полный прогон `make check` (lint + mypy + import-linter + tests) зелёный
+- [x] Ревью всего diff (`layer-reviewer`) — Critical закрыты
 
 ## 11. Решения оператора
 
@@ -670,6 +675,7 @@ class PaymentResponse(BaseModel):             # 200
 | 47 | Все брокерные тесты используют одну лестницу задержек (300/900 мс) | Аргументы очередей неизменяемы: тест с другой лестницей на общем контейнере падал с PRECONDITION_FAILED |
 | 48 | Добавлены тесты: схема суммы, claim и его лизинг, конкурентный эмулятор шлюза, политика consumer'а, outbox API | Закрывают находки ревью: пустые места, из-за которых гарантии были непроверяемыми |
 | 49 | Реализован операторский контур: `python -m payments.cli dlq peek/replay` и WARNING от relay при отставании outbox больше минуты | Ревью: у DLQ не было пути восстановления, а отставание outbox было ненаблюдаемым — платежи уходили в DLQ со статусом `pending` и оставались там навсегда |
+| 50 | Фикстура `clean_broker` очищает рабочие очереди до и после каждого broker-теста; ассерты больше не сравниваются с «до» | Один прогон интеграционных тестов из семи дал 2 падения в `test_outbox_relay`, потому что брокер общий на всю сессию: сообщения, оставшиеся от прошлого теста или выпавшие из retry-тира по TTL, меняли глубину очереди. Падение не воспроизвелось (4 чистых прогона после правки), но причина устранена |
 
 ## 13. Волны работ
 

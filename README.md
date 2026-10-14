@@ -205,7 +205,7 @@ outbox, почему тиры ретраев, почему `ON CONFLICT`).
 ## Тесты
 
 ```bash
-uv run pytest -q                 # всё: 143+ теста
+uv run pytest -q                 # всё: 228 тестов (157 unit + 71 integration)
 uv run pytest tests/unit -q      # домен, use cases на фейках, адаптеры
 uv run pytest tests/integration -q   # живой PostgreSQL и RabbitMQ в контейнерах
 uv run pytest -m "not integration" -q  # только то, что не требует Docker

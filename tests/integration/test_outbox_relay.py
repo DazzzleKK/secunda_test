@@ -21,7 +21,6 @@ from tests.integration.helpers import (
     RabbitMq,
     build_outbox_event,
     build_payment,
-    queue_messages,
     wait_for_queue_messages,
 )
 
@@ -40,11 +39,12 @@ async def _seed_event(uow_factory) -> None:
         await uow.commit()
 
 
-async def test_a_batch_is_published_and_stamped(uow_factory, rabbitmq: RabbitMq) -> None:
+async def test_a_batch_is_published_and_stamped(
+    uow_factory, rabbitmq: RabbitMq, clean_broker: None
+) -> None:
     topology = Topology(retry_delays_ms=RETRY_DELAYS_MS)
     await declare_topology(rabbitmq.amqp_url, topology)
     await _seed_event(uow_factory)
-    before = queue_messages(rabbitmq.management_url, WORK_QUEUE_NAME)
 
     broker = build_broker(rabbitmq.amqp_url)
     await broker.start()
@@ -61,14 +61,12 @@ async def test_a_batch_is_published_and_stamped(uow_factory, rabbitmq: RabbitMq)
     async with uow_factory() as uow:
         assert await uow.outbox.fetch_unpublished(10) == []
 
-    depth = await wait_for_queue_messages(
-        rabbitmq.management_url, WORK_QUEUE_NAME, minimum=before + 1
-    )
-    assert depth >= before + 1
+    depth = await wait_for_queue_messages(rabbitmq.management_url, WORK_QUEUE_NAME, minimum=1)
+    assert depth >= 1
 
 
 async def test_an_unroutable_event_is_not_marked_as_published(
-    uow_factory, rabbitmq: RabbitMq
+    uow_factory, rabbitmq: RabbitMq, clean_broker: None
 ) -> None:
     """A message no queue is bound to must not look published.
 
@@ -105,12 +103,11 @@ async def test_an_unroutable_event_is_not_marked_as_published(
 
 
 async def test_the_loop_stops_on_request_and_publishes_what_it_finds(
-    uow_factory, rabbitmq: RabbitMq, settings_factory
+    uow_factory, rabbitmq: RabbitMq, settings_factory, clean_broker: None
 ) -> None:
     topology = Topology(retry_delays_ms=RETRY_DELAYS_MS)
     await declare_topology(rabbitmq.amqp_url, topology)
     await _seed_event(uow_factory)
-    before = queue_messages(rabbitmq.management_url, WORK_QUEUE_NAME)
 
     broker = build_broker(rabbitmq.amqp_url)
     await broker.start()
@@ -123,13 +120,11 @@ async def test_the_loop_stops_on_request_and_publishes_what_it_finds(
             settings_factory(outbox_poll_interval_ms=50),
         )
         task = asyncio.create_task(relay.run(stop))
-        depth = await wait_for_queue_messages(
-            rabbitmq.management_url, WORK_QUEUE_NAME, minimum=before + 1
-        )
+        depth = await wait_for_queue_messages(rabbitmq.management_url, WORK_QUEUE_NAME, minimum=1)
         stop.set()
         await asyncio.wait_for(task, timeout=5.0)
     finally:
         await broker.stop()
 
-    assert depth >= before + 1
+    assert depth >= 1
     assert task.done()

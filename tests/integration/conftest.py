@@ -21,6 +21,7 @@ from payments.presentation.api.app import create_app
 from tests.integration.helpers import (
     TEST_API_KEY,
     RabbitMq,
+    purge_service_queues,
     truncate_all,
     wait_for_rabbitmq,
 )
@@ -107,6 +108,21 @@ async def clean_database(engine: AsyncEngine) -> AsyncIterator[None]:
         yield
     finally:
         await truncate_all(engine)
+
+
+@pytest_asyncio.fixture
+async def clean_broker(rabbitmq: RabbitMq) -> AsyncIterator[None]:
+    """Every broker test starts and ends with empty queues.
+
+    The counterpart of `clean_database` for the shared broker: without it a test
+    that asserts on queue depth depends on what the previous test left behind,
+    including messages whose retry TTL expires in the middle of a later test.
+    """
+    purge_service_queues(rabbitmq.management_url)
+    try:
+        yield
+    finally:
+        purge_service_queues(rabbitmq.management_url)
 
 
 @pytest_asyncio.fixture

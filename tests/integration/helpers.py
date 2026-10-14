@@ -17,6 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from payments.domain.entities import OutboxEvent, Payment
 from payments.domain.enums import Currency
 from payments.domain.value_objects import IdempotencyKey, Money, WebhookTarget
+from payments.infrastructure.messaging.topology import (
+    DLQ_NAME,
+    WORK_QUEUE_NAME,
+    Topology,
+)
 
 FIXED_NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
@@ -111,6 +116,32 @@ def queue_document(management_url: str, queue: str) -> dict[str, Any]:
 def queue_messages(management_url: str, queue: str) -> int:
     """Return how many messages a queue currently holds."""
     return int(queue_document(management_url, queue).get("messages", 0))
+
+
+def purge_queue(management_url: str, queue: str) -> None:
+    """Drop everything a queue holds; a queue that does not exist yet is fine."""
+    response = httpx.delete(
+        f"{management_url}/api/queues/%2F/{queue}/contents",
+        auth=(RABBITMQ_USER, RABBITMQ_PASSWORD),
+        timeout=5.0,
+        trust_env=False,
+    )
+    if response.status_code not in (204, 404):
+        response.raise_for_status()
+
+
+def purge_service_queues(management_url: str) -> None:
+    """Empty the working queue, the retry tiers and the dead letter queue.
+
+    The broker is shared by the whole session, so a message another test left
+    behind (or one whose TTL expires while a later test runs) would otherwise
+    change the queue depths this test asserts on.
+    """
+    topology = Topology(retry_delays_ms=RABBITMQ_TEST_RETRY_DELAYS_MS)
+    purge_queue(management_url, WORK_QUEUE_NAME)
+    purge_queue(management_url, DLQ_NAME)
+    for target in topology.retry_tiers:
+        purge_queue(management_url, target.queue_name)
 
 
 def queue_bindings(management_url: str, queue: str) -> set[tuple[str, str]]:

@@ -237,6 +237,7 @@ def _payload_of(message: dict[str, Any]) -> dict[str, Any]:
 async def test_a_payment_is_processed_and_the_webhook_is_signed(
     consumer: ConsumerHarness,
     webhook_sink: WebhookSink,
+    clean_broker: None,
 ) -> None:
     payment_id = await consumer.submit(webhook_url=webhook_sink.url, idempotency_key="flow-success")
 
@@ -263,6 +264,7 @@ async def test_a_failing_webhook_lands_in_the_dead_letter_queue(
     consumer: ConsumerHarness,
     webhook_sink: WebhookSink,
     rabbitmq: RabbitMq,
+    clean_broker: None,
 ) -> None:
     baseline = queue_messages(rabbitmq.management_url, DLQ_NAME)
     webhook_sink.fail(enabled=True)
@@ -289,6 +291,7 @@ async def test_a_failing_webhook_lands_in_the_dead_letter_queue(
 async def test_a_redelivered_event_does_not_charge_or_notify_twice(
     consumer: ConsumerHarness,
     webhook_sink: WebhookSink,
+    clean_broker: None,
 ) -> None:
     payment_id = await consumer.submit(
         webhook_url=webhook_sink.url, idempotency_key="flow-duplicate"
@@ -311,6 +314,7 @@ async def test_the_working_queue_is_drained_by_the_consumer(
     consumer: ConsumerHarness,
     webhook_sink: WebhookSink,
     rabbitmq: RabbitMq,
+    clean_broker: None,
 ) -> None:
     payment_id = await consumer.submit(webhook_url=webhook_sink.url, idempotency_key="flow-queue")
     await wait_for_events(webhook_sink, 1)

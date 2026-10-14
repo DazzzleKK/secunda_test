@@ -17,7 +17,8 @@ API_KEY_HEADER = "X-API-Key"
 
 def verify_api_key(provided: str | None, expected: str) -> None:
     """Compare the presented key with the configured one in constant time."""
-    if provided is None:
+    if not provided or not expected:
+        # An empty configured key must never authenticate anybody.
         raise UnauthorizedError()
     if not secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
         raise UnauthorizedError()

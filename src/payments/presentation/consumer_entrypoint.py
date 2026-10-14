@@ -53,7 +53,9 @@ async def main() -> None:
     unit_of_work_factory = SqlAlchemyUnitOfWorkFactory(session_factory)
     clock = SystemClock()
 
-    http_client = httpx.AsyncClient()
+    # trust_env=False: a proxy configured in the environment must not silently
+    # receive the merchants' webhooks.
+    http_client = httpx.AsyncClient(trust_env=False)
     broker = build_broker(settings.rabbitmq_url)
     consumer = PaymentConsumer(
         broker=broker,

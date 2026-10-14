@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Final
 
-from pydantic import field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 RetryDelays = Annotated[tuple[int, ...], NoDecode]
+
+DEV_ENVIRONMENTS: Final[frozenset[str]] = frozenset({"local", "test", "ci"})
+INSECURE_SECRETS: Final[frozenset[str]] = frozenset(
+    {"change-me", "local-dev-api-key", "local-dev-signing-secret"}
+)
 
 
 class Settings(BaseSettings):
@@ -23,7 +28,7 @@ class Settings(BaseSettings):
 
     app_env: str = "local"
     log_level: str = "INFO"
-    api_key: str
+    api_key: str = Field(min_length=1)
 
     postgres_host: str = "localhost"
     postgres_port: int = 5432
@@ -83,13 +88,30 @@ class Settings(BaseSettings):
         """Poll interval of the outbox relay in seconds."""
         return self.outbox_poll_interval_ms / 1000
 
+    @model_validator(mode="after")
+    def _refuse_development_secrets(self) -> Settings:
+        """Outside development the example secrets must be replaced.
+
+        The defaults exist so that `docker compose up` works on a clean checkout;
+        starting a non-local environment with them would silently accept a publicly
+        known API key and sign webhooks with a known secret.
+        """
+        if self.app_env in DEV_ENVIRONMENTS:
+            return self
+        insecure = {self.api_key, self.webhook_signing_secret} & INSECURE_SECRETS
+        if insecure:
+            raise ValueError(
+                f"replace the example secrets before running with APP_ENV={self.app_env!r}"
+            )
+        return self
+
 
 @lru_cache
 def get_settings() -> Settings:
     """Return the process-wide settings singleton.
 
-    `api_key` is required by design: mypy cannot see that pydantic-settings fills
-    it from the environment, hence the narrow ignore.
+    `api_key` is required: mypy cannot see that pydantic-settings fills it from the
+    environment, hence the narrow ignore.
     """
     return Settings()  # type: ignore[call-arg]
 

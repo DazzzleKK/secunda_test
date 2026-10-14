@@ -50,6 +50,13 @@ def build_outbox_event(payment: Payment, *, now: datetime = FIXED_NOW) -> Outbox
 
 
 TEST_API_KEY = "test-api-key"
+RABBITMQ_TEST_RETRY_DELAYS_MS = (300, 900)
+"""Retry ladder shared by every broker test.
+
+Queue arguments are immutable in RabbitMQ, so all tests that declare the topology
+on the session-scoped broker must use the same delays — otherwise the second
+declaration fails with PRECONDITION_FAILED.
+"""
 RABBITMQ_USER = "guest"
 RABBITMQ_PASSWORD = "guest"
 WEBHOOK_SECRET = "integration-signing-secret"

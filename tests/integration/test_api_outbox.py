@@ -19,6 +19,7 @@ from payments.infrastructure.config import Settings
 from payments.infrastructure.db.models import OutboxModel
 from payments.presentation.api.app import create_app
 from tests.integration.helpers import (
+    RABBITMQ_TEST_RETRY_DELAYS_MS,
     TEST_API_KEY,
     RabbitMq,
     api_headers,
@@ -76,6 +77,7 @@ def api_settings(postgres_url: str, rabbitmq: RabbitMq):
             database_url=postgres_url,
             rabbitmq_host=host,
             rabbitmq_port=port,
+            retry_delays_ms=RABBITMQ_TEST_RETRY_DELAYS_MS,
         )
 
     return build

@@ -68,6 +68,12 @@ Location: /api/v1/payments/0f8f...-...
 Ответ `202` означает «принят и сохранён»: запись в БД и событие в outbox
 зафиксированы одной транзакцией, обработка идёт в фоне.
 
+**Сумма передаётся строкой** — `"100.50"`, не `100.5`. JSON-число прошло бы через
+float и могло изменить значение (например, `100000000000000.01` → `...02`), поэтому
+такой запрос отклоняется с 422; целых и дробных значений с одним знаком после точки
+это не касается — `"10.5"` нормализуется в `10.50`. Доменные инварианты суммы
+(положительная, не больше 18 разрядов) отдают `invalid_amount`.
+
 Повтор с тем же ключом и телом — идемпотентный повтор:
 
 ```bash
@@ -173,8 +179,8 @@ outbox, почему тиры ретраев, почему `ON CONFLICT`).
 | Критерий | Что смотреть | Чем доказано |
 |---|---|---|
 | Архитектура и чистота | `docs/ARCHITECTURE.md`, `src/payments/{domain,application,infrastructure,presentation}/`, контракты import-linter в `pyproject.toml` | `uv run lint-imports` (4 контракта), `uv run mypy src` (strict), таблица «куда класть логику» |
-| Outbox pattern | `application/use_cases/create_payment.py` (один `commit()` на две таблицы), `application/use_cases/publish_outbox.py`, `infrastructure/db/repositories.py` (`SKIP LOCKED`), `infrastructure/messaging/outbox_relay.py` | сценарий 7 демо (`tests/integration/test_outbox_relay.py`): брокер лежит → 202, событие ждёт; поднялся → опубликовано |
-| RabbitMQ (очереди, обменники, DLQ) | `infrastructure/messaging/{topology,broker,publisher,consumer}.py` | `tests/integration/test_rabbit_topology.py` (durable и TTL тиров через management API), `tests/integration/test_consumer_flow.py` (ровно одно сообщение в `payments.dlq` после трёх попыток) |
+| Outbox pattern | `application/use_cases/create_payment.py` (один `commit()` на две таблицы), `application/use_cases/publish_outbox.py`, `infrastructure/db/repositories.py` (`SKIP LOCKED`), `infrastructure/messaging/outbox_relay.py` | `tests/integration/test_api_outbox.py`: при недоступном брокере POST → 202 и событие ждёт в outbox; с живым брокером встроенный relay его публикует. Демо-скрипт проверяет то же на compose: брокер остановлен → 202 → после `start` событие уезжает |
+| RabbitMQ (очереди, обменники, DLQ) | `infrastructure/messaging/{topology,broker,publisher,consumer}.py` | `tests/integration/test_rabbit_topology.py` (durable и TTL тиров через management API), `tests/integration/test_consumer_flow.py` (сообщение после трёх попыток оказывается в `payments.dlq` с `x-attempt=3` и `x-error`) |
 | Идемпотентность | `domain/services.py` (fingerprint), `infrastructure/db/repositories.py` (`ON CONFLICT`, guarded update), `application/use_cases/create_payment.py` | `tests/integration/test_api_payments.py`: повтор → один платёж и одно событие, другое тело → 409 |
 | Обработка ошибок и retry | `shared/exceptions/`, `domain/exceptions.py`, `presentation/api/errors.py`, `infrastructure/messaging/consumer.py`, `infrastructure/webhook/http_sender.py` | e2e «приёмник падает → 3 попытки → DLQ»; unit-тесты маппинга кодов в HTTP |
 | Docker | `Dockerfile` (multi-stage, non-root, uv), `docker-compose.yml`, `scripts/demo.py` | `docker compose down -v && docker compose up -d --wait` с нуля, healthcheck'и на всех сервисах |

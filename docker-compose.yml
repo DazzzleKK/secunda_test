@@ -98,13 +98,14 @@ services:
     depends_on:
       <<: *app-dependencies
     healthcheck:
+      # `/ready`, not `/health`: the probe must notice a database that went away.
       test:
         - CMD
         - python
         - -c
         - |
           import sys, urllib.request
-          with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=3) as answer:
+          with urllib.request.urlopen("http://127.0.0.1:8000/ready", timeout=3) as answer:
               sys.exit(0 if answer.status == 200 else 1)
       interval: 10s
       timeout: 5s
@@ -135,7 +136,8 @@ services:
     volumes:
       - ./scripts/webhook_sink.py:/sink/webhook_sink.py:ro
     ports:
-      - "${SINK_PORT:-9000}:9000"
+      # Loopback only: the receiver is a debugging tool, not part of the service.
+      - "127.0.0.1:${SINK_PORT:-9000}:9000"
     healthcheck:
       test:
         - CMD

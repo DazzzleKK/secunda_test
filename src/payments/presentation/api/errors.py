@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from payments.presentation.api.schemas import ErrorEnvelope
 from shared.exceptions import AppError
@@ -102,14 +103,32 @@ ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
         "description": "Request validation or domain invariant failure",
     },
     503: {"model": ErrorEnvelope, "description": "Retryable technical failure"},
+    500: {"model": ErrorEnvelope, "description": "Internal error"},
 }
 """Error answers documented in the OpenAPI schema of every business endpoint."""
+
+
+HTTP_STATUS_TO_CODE: dict[int, str] = {
+    status.HTTP_404_NOT_FOUND: "not_found",
+    status.HTTP_405_METHOD_NOT_ALLOWED: "method_not_allowed",
+}
+"""Codes for the framework's own errors, so every answer uses the envelope."""
+
+
+async def http_exception_handler(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """Render 404/405 of the framework in the same envelope as everything else."""
+    code = HTTP_STATUS_TO_CODE.get(exc.status_code, "http_error")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_envelope(code, str(exc.detail), None),
+    )
 
 
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach the handlers of the service to the application."""
     app.add_exception_handler(AppError, app_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, unexpected_error_handler)
 
 

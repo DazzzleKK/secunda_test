@@ -514,9 +514,22 @@ class PaymentResponse(BaseModel):             # 200
 | `missing_idempotency_key` | 400 | нет заголовка `Idempotency-Key` |
 | `payment_not_found` | 404 | GET неизвестного id |
 | `idempotency_conflict` | 409 | тот же ключ + другой fingerprint |
-| `validation_error` | 422 | Pydantic |
-| `invalid_amount` | 422 | доменный инвариант суммы |
+| `payment_not_visible` | 409 | строка с ключом закоммичена, но ещё не видна — повторить запрос |
+| `payment_not_finalized` | 409 | webhook запрошен до финального статуса |
+| `validation_error` | 422 | Pydantic (форма запроса, путь, типы) |
+| `invalid_amount` | 422 | сумма: не положительная, не 2 знака, больше 18 разрядов |
+| `invalid_currency` | 422 | валюта не из RUB/USD/EUR |
+| `invalid_metadata` | 422 | metadata не JSON-объект, не сериализуется или больше 8 КБ |
+| `invalid_webhook_url` | 422 | webhook_url не абсолютный http(s) с хостом |
+| `invalid_idempotency_key` | 422 | ключ пустой или длиннее 255 символов |
+| `payment_gateway_unavailable`, `payment_processing_failed` | 503 | технический сбой шлюза (ретраится в очереди) |
+| `webhook_delivery_failed` | 503 | webhook не доставлен (ретраится в очереди) |
+| `infra_error` | 503 | непереведённый сбой инфраструктуры (БД) |
 | `internal_error` | 500 | непойманное |
+
+`details` — только whitelist: `payment_id`, `idempotency_key`, `attempts`, `scheme`, `has_host`,
+`size_bytes`, `limit_bytes`, `idempotency_key_length`. Сам `webhook_url` в ответ не попадает:
+в userinfo могут быть учётные данные.
 
 ## 8. Поведение после изменений
 
@@ -621,6 +634,13 @@ class PaymentResponse(BaseModel):             # 200
 | 11 | `ruff extend-exclude = ["docs"]` | ruff 0.17 форматирует python-блоки внутри Markdown и покушался на brief |
 | 12 | `include_external_packages = true` в конфиге import-linter | Иначе контракты на внешние модули (sqlalchemy, fastapi) не проверяются |
 | 13 | `make check` дополняется явными командами для Windows | На машине оператора нет `make`; README даёт оба пути |
+| 14 | Сигнатура `UnitOfWorkProtocol.__aexit__` — стандартная трёхаргументная | Протокол с `*exc_info: object` несовместим с реализацией; mypy strict это ловит |
+| 15 | Новые доменные коды: `invalid_currency`, `invalid_metadata`, `invalid_webhook_url`, `invalid_idempotency_key`, `payment_not_visible` | Ревью волны 1: VO-нарушения уходили в общий `payments_error` → 500; гонка по ключу переиспользовала код технического сбоя шлюза |
+| 16 | `metadata` канонизируется в домене: глубоко замораживается, нормализуется JSON и ограничивается 8 КБ; тот же снимок идёт в fingerprint | Ревью I1/I3: shallow-копия позволяла изменить `metadata` после расчёта fingerprint, а размер проверялся только будущей схемой API |
+| 17 | Вставки в БД идут через Core-таблицу (`PaymentModel.__table__`), а не через ORM-сущность | ORM-вставка резолвит ключ `metadata` как `Base.metadata` и падает с `AttributeError` |
+| 18 | `fetch_unpublished` не отдаёт события, у которых `attempts >= 5` (парковка), а `last_error` обрезается до 500 символов | Ревью I5: «отравленное» событие переопубликовывалось бы вечно, а текст ошибки брокера писался целиком |
+| 19 | `PublishOutboxUseCase` не коммитит пустую пачку | Ревью M9: лишний commit на каждом тике relay |
+| 20 | `testcontainers.community.postgres` вместо `testcontainers.postgres` | Прежний путь помечен deprecated в testcontainers 4.15 |
 
 ## 13. Волны работ
 

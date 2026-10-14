@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 import pytest_asyncio
 from alembic import command
@@ -12,9 +13,11 @@ from alembic.config import Config
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from testcontainers.community.postgres import PostgresContainer
 
+from payments.infrastructure.config import Settings
 from payments.infrastructure.db.session import build_engine, build_session_factory
 from payments.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
-from tests.integration.helpers import truncate_all
+from payments.presentation.api.app import create_app
+from tests.integration.helpers import TEST_API_KEY, truncate_all
 
 POSTGRES_IMAGE = "postgres:16-alpine"
 POSTGRES_PORT = 5432
@@ -93,3 +96,18 @@ async def uow_factory(
 ) -> SqlAlchemyUnitOfWorkFactory:
     """Factory of transactions, as the use cases receive it."""
     return SqlAlchemyUnitOfWorkFactory(session_factory)
+
+
+@pytest_asyncio.fixture
+async def api_client(postgres_url: str) -> AsyncIterator[httpx.AsyncClient]:
+    """HTTP client that talks to the real application over ASGI."""
+    app = create_app(Settings(_env_file=None, api_key=TEST_API_KEY, database_url=postgres_url))
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            yield client
+    finally:
+        await app.state.dishka_container.close()

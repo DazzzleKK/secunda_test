@@ -43,8 +43,24 @@ def test_money_rejects_non_positive_amount(amount: Decimal) -> None:
         Money(amount=amount, currency=Currency.RUB)
 
 
-@pytest.mark.parametrize("amount", [Decimal("10.5"), Decimal("10.500"), Decimal("10")])
-def test_money_rejects_amount_without_exactly_two_fraction_digits(amount: Decimal) -> None:
+@pytest.mark.parametrize(
+    ("amount", "expected"),
+    [
+        (Decimal("10.5"), "10.50"),
+        (Decimal("10"), "10.00"),
+        (Decimal("10.500"), "10.50"),
+    ],
+)
+def test_money_normalises_amounts_with_fewer_fraction_digits(
+    amount: Decimal, expected: str
+) -> None:
+    money = Money(amount=amount, currency=Currency.RUB)
+
+    assert money.as_string() == expected
+
+
+@pytest.mark.parametrize("amount", [Decimal("10.555"), Decimal("0.001")])
+def test_money_rejects_amount_with_too_many_fraction_digits(amount: Decimal) -> None:
     with pytest.raises(InvalidAmountError):
         Money(amount=amount, currency=Currency.RUB)
 

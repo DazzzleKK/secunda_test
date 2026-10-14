@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Final
 from urllib.parse import urlparse
 
@@ -17,6 +17,7 @@ from payments.domain.exceptions import (
 )
 
 FRACTION_DIGITS: Final[int] = 2
+QUANTUM: Final[Decimal] = Decimal(1).scaleb(-FRACTION_DIGITS)
 MAX_AMOUNT_DIGITS: Final[int] = 18
 MAX_IDEMPOTENCY_KEY_LENGTH: Final[int] = 255
 ALLOWED_WEBHOOK_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https"})
@@ -26,8 +27,10 @@ ALLOWED_WEBHOOK_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https"})
 class Money:
     """A positive monetary amount with an explicit currency.
 
-    The amount keeps exactly two fraction digits, so its string form is stable and
-    safe to put into JSON (money never travels as a float).
+    The amount is normalised to exactly two fraction digits, so `10.5`, `10.50`
+    and `10` are the same money and produce the same request fingerprint. Amounts
+    with more precision than the currency supports are rejected instead of being
+    rounded silently.
     """
 
     amount: Decimal
@@ -38,10 +41,15 @@ class Money:
             raise InvalidAmountError(self.amount)
         if not self.amount.is_finite() or self.amount <= 0:
             raise InvalidAmountError(self.amount)
-        if self.amount.as_tuple().exponent != -FRACTION_DIGITS:
+        try:
+            normalized = self.amount.quantize(QUANTUM)
+        except InvalidOperation as exc:
+            raise InvalidAmountError(self.amount) from exc
+        if normalized != self.amount:
             raise InvalidAmountError(self.amount)
-        if len(self.amount.as_tuple().digits) > MAX_AMOUNT_DIGITS:
+        if len(normalized.as_tuple().digits) > MAX_AMOUNT_DIGITS:
             raise InvalidAmountError(self.amount)
+        object.__setattr__(self, "amount", normalized)
         if not isinstance(self.currency, Currency):
             raise InvalidCurrencyError(self.currency)
 
@@ -107,6 +115,7 @@ __all__ = [
     "FRACTION_DIGITS",
     "MAX_AMOUNT_DIGITS",
     "MAX_IDEMPOTENCY_KEY_LENGTH",
+    "QUANTUM",
     "IdempotencyKey",
     "Money",
     "PaymentOutcome",

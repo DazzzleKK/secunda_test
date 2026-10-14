@@ -152,7 +152,7 @@ async def test_create_payment_reports_a_retryable_conflict_when_the_winner_is_no
     assert exc_info.value.code == "payment_not_visible"
 
 
-@pytest.mark.parametrize("amount", ["0.00", "-5.00", "10.5"])
+@pytest.mark.parametrize("amount", ["0.00", "-5.00", "10.555"])
 async def test_create_payment_rejects_an_invalid_amount(
     amount: str,
     store: FakeStore,

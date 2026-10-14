@@ -45,6 +45,39 @@ def build_outbox_event(payment: Payment, *, now: datetime = FIXED_NOW) -> Outbox
     return OutboxEvent.payment_created(payment, now=now)
 
 
+TEST_API_KEY = "test-api-key"
+
+
+def api_headers(
+    idempotency_key: str | None = "idem-1",
+    *,
+    api_key: str = TEST_API_KEY,
+) -> dict[str, str]:
+    """Headers of an authenticated request; the idempotency key is optional."""
+    headers = {"X-API-Key": api_key}
+    if idempotency_key is not None:
+        headers["Idempotency-Key"] = idempotency_key
+    return headers
+
+
+def payment_body(
+    *,
+    amount: str = "100.50",
+    currency: str = "RUB",
+    description: str = "integration test payment",
+    metadata: dict[str, Any] | None = None,
+    webhook_url: str = "https://example.test/hooks/payments",
+) -> dict[str, Any]:
+    """A valid body of `POST /api/v1/payments`."""
+    return {
+        "amount": amount,
+        "currency": currency,
+        "description": description,
+        "metadata": {"order_id": "42"} if metadata is None else metadata,
+        "webhook_url": webhook_url,
+    }
+
+
 async def count_rows(session: AsyncSession, model: type[Any]) -> int:
     """Count the rows of a table through a fresh session."""
     result = await session.execute(select(func.count()).select_from(model))
@@ -61,8 +94,11 @@ async def truncate_all(engine: AsyncEngine) -> None:
 
 __all__ = [
     "FIXED_NOW",
+    "TEST_API_KEY",
+    "api_headers",
     "build_outbox_event",
     "build_payment",
     "count_rows",
+    "payment_body",
     "truncate_all",
 ]

@@ -14,6 +14,7 @@ import signal
 from contextlib import suppress
 from typing import Final
 
+from payments.application.ports.unit_of_work import UnitOfWorkFactoryProtocol
 from payments.application.use_cases.publish_outbox import PublishOutboxUseCase
 from payments.infrastructure.config import Settings, get_settings
 from payments.infrastructure.db.session import build_engine, build_session_factory
@@ -30,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 ERROR_RETRY_PAUSE_SECONDS: Final[float] = 5.0
 BROKER_SHUTDOWN_TIMEOUT_SECONDS: Final[float] = 5.0
+LAG_WARNING_SECONDS: Final[float] = 60.0
+LAG_REPORT_EVERY_TICKS: Final[int] = 10
 STANDALONE_TOPOLOGY_ATTEMPTS: Final[int] = 3
 STANDALONE_TOPOLOGY_PAUSE_SECONDS: Final[float] = 1.0
 
@@ -37,9 +40,16 @@ STANDALONE_TOPOLOGY_PAUSE_SECONDS: Final[float] = 1.0
 class OutboxRelay:
     """Publishes pending outbox events in a loop until asked to stop."""
 
-    def __init__(self, use_case: PublishOutboxUseCase, settings: Settings) -> None:
+    def __init__(
+        self,
+        use_case: PublishOutboxUseCase,
+        settings: Settings,
+        uow_factory: UnitOfWorkFactoryProtocol | None = None,
+    ) -> None:
         self._use_case = use_case
         self._settings = settings
+        self._uow_factory = uow_factory
+        self._ticks = 0
 
     async def run_once(self) -> int:
         """Publish one batch and return how many events were published."""
@@ -56,8 +66,33 @@ class OutboxRelay:
                 await self._sleep(stop, ERROR_RETRY_PAUSE_SECONDS)
                 continue
             if published:
-                logger.info("published outbox events", extra={"count": published})
+                logger.info("published outbox events: %s", published)
+            self._ticks += 1
+            await self._report_lag()
             await self._sleep(stop, interval)
+
+    async def _report_lag(self) -> None:
+        """Warn when an event has been waiting to be published for too long.
+
+        The relay is the only publisher, so a growing lag is the signal that events
+        are piling up (a dead broker, a parked payload, a slow database) — without
+        this line the incident is invisible: the API keeps answering 202.
+        """
+        if self._uow_factory is None or self._ticks % LAG_REPORT_EVERY_TICKS:
+            return
+        try:
+            async with self._uow_factory() as uow:
+                age = await uow.outbox.oldest_unpublished_age()
+        except Exception:
+            logger.exception("could not read the outbox lag")
+            return
+        if age is None:
+            return
+        seconds = age.total_seconds()
+        if seconds >= LAG_WARNING_SECONDS:
+            logger.warning(
+                "outbox lag is %.0f seconds: an event is waiting to be published", seconds
+            )
 
     @staticmethod
     async def _sleep(stop: asyncio.Event, seconds: float) -> None:
@@ -93,13 +128,14 @@ async def main() -> None:
         except Exception:
             logger.exception("broker topology is not ready; the outbox keeps the events")
         await broker.start()
+        unit_of_work_factory = SqlAlchemyUnitOfWorkFactory(build_session_factory(engine))
         use_case = PublishOutboxUseCase(
-            SqlAlchemyUnitOfWorkFactory(build_session_factory(engine)),
+            unit_of_work_factory,
             RabbitEventPublisher(broker, topology),
             SystemClock(),
         )
         logger.info("standalone outbox relay started")
-        await OutboxRelay(use_case, settings).run(stop)
+        await OutboxRelay(use_case, settings, unit_of_work_factory).run(stop)
     finally:
         try:
             await asyncio.wait_for(broker.stop(), timeout=BROKER_SHUTDOWN_TIMEOUT_SECONDS)

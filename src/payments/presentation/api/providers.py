@@ -72,9 +72,10 @@ class AppProvider(Provider):
         self,
         publish_outbox_use_case: PublishOutboxUseCase,
         settings: Settings,
+        unit_of_work_factory: UnitOfWorkFactoryProtocol,
     ) -> OutboxRelay:
         """Publisher of committed events, running inside the API process."""
-        return OutboxRelay(publish_outbox_use_case, settings)
+        return OutboxRelay(publish_outbox_use_case, settings, unit_of_work_factory)
 
     @provide(scope=Scope.APP)
     async def engine(self, settings: Settings) -> AsyncIterator[AsyncEngine]:

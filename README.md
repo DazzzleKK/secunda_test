@@ -30,8 +30,9 @@ uv run python scripts/demo.py                # 7 сценариев, PASS/FAIL �
 
 Скрипт проходит: готовность API → платёж обработан и webhook доставлен с валидной
 подписью → идемпотентный повтор → конфликт по ключу → обязательные заголовки →
-DLQ после трёх попыток → outbox при недоступном брокере. Для быстрого прохождения
-сценария с DLQ поставьте в `.env` короткие задержки: `RETRY_DELAYS_MS=1000,2000,3000`.
+DLQ после исчерпания попыток → outbox при недоступном брокере. Для быстрого
+прохождения сценария с DLQ поставьте в `.env` короткие задержки:
+`RETRY_DELAYS_MS=1000,2000` (и пересоздайте очереди: `docker compose down -v`).
 
 ---
 
@@ -148,8 +149,12 @@ outbox, почему тиры ретраев, почему `ON CONFLICT`).
 | `payments` (topic, durable) | `payments.new` | `payments.new` | рабочая очередь, prefetch 10 |
 | `payments.retry` (direct, durable) | `retry.1` | `payments.retry.1` | TTL 5 с, DLX → `payments`/`payments.new` |
 | `payments.retry` | `retry.2` | `payments.retry.2` | TTL 25 с |
-| `payments.retry` | `retry.3` | `payments.retry.3` | TTL 125 с |
-| `payments.dlx` (direct, durable) | `payments.dlq` | `payments.dlq` | свалка после 3 попыток, без consumer'а |
+| `payments.dlx` (direct, durable) | `payments.dlq` | `payments.dlq` | свалка после исчерпания попыток, без consumer'а |
+
+Число тиров задаётся `RETRY_DELAYS_MS`: **N задержек = N повторов, то есть N+1
+обработок** (по умолчанию 5 с и 25 с → три обработки, дальше DLQ). Аргументы
+очереди в RabbitMQ неизменяемы, поэтому после смены `RETRY_DELAYS_MS` нужно
+пересоздать очередь: `docker compose down -v && docker compose up -d --wait`.
 
 **Гарантии.** Доставка at-least-once, обработка идемпотентна, поэтому эффект ровно
 один: платёж и событие пишутся одной транзакцией; `ON CONFLICT (idempotency_key)`
@@ -238,7 +243,7 @@ uv run alembic upgrade head
 | `RABBITMQ_*` | `rabbitmq`/`guest` | подключение к брокеру |
 | `OUTBOX_BATCH_SIZE`, `OUTBOX_POLL_INTERVAL_MS` | `100`, `1000` | пачка и период relay |
 | `GATEWAY_SUCCESS_RATE`, `GATEWAY_MIN_DELAY_MS`, `GATEWAY_MAX_DELAY_MS`, `GATEWAY_RANDOM_SEED` | `0.9`, `2000`, `5000`, `42` | эмуляция шлюза (seed — для детерминированных тестов) |
-| `RETRY_DELAYS_MS` | `5000,25000,125000` | задержки трёх retry-тиров |
+| `RETRY_DELAYS_MS` | `5000,25000` | задержки retry-тиров: N значений — N повторов, всего N+1 обработок |
 | `WEBHOOK_TIMEOUT_SECONDS`, `WEBHOOK_SIGNING_SECRET` | `5`, `local-dev-signing-secret` | таймаут и HMAC-секрет вебхуков |
 | `LOG_LEVEL` | `INFO` | уровень логирования |
 

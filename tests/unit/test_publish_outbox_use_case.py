@@ -59,27 +59,58 @@ async def test_publish_outbox_skips_events_that_were_already_published(
     assert publisher.published == [pending.id]
 
 
-async def test_publish_outbox_records_a_failure_and_keeps_going(
+async def test_publish_outbox_records_a_transient_failure_and_stops_the_batch(
     store: FakeStore,
     clock: FakeClock,
     uow_factory: FakeUnitOfWorkFactory,
 ) -> None:
-    failing = seed_outbox(store, make_outbox_event(event_id=UUID(int=1), now=FIXED_NOW))
-    healthy = seed_outbox(
+    healthy = seed_outbox(store, make_outbox_event(event_id=UUID(int=1), now=FIXED_NOW))
+    unreachable = seed_outbox(
         store,
         make_outbox_event(event_id=UUID(int=2), now=FIXED_NOW + timedelta(seconds=1)),
     )
-    publisher = FakeEventPublisher(failing_event_ids=[failing.id])
+    publisher = FakeEventPublisher(failing_event_ids=[unreachable.id])
     use_case = PublishOutboxUseCase(uow_factory, publisher, clock)
 
     published = await use_case.execute()
 
     assert published == 1
     assert publisher.published == [healthy.id]
-    assert store.outbox[failing.id].published_at is None
-    assert store.outbox[failing.id].attempts == 1
-    assert store.outbox[failing.id].last_error == f"broker rejected event {failing.id}"
+    assert store.outbox[unreachable.id].published_at is None
+    assert "broker is unreachable" in (store.outbox[unreachable.id].last_error or "")
     assert store.outbox[healthy.id].published_at == clock.now()
+
+
+async def test_a_transient_failure_does_not_consume_the_publication_attempts(
+    store: FakeStore,
+    clock: FakeClock,
+    uow_factory: FakeUnitOfWorkFactory,
+) -> None:
+    failing = seed_outbox(store, make_outbox_event(event_id=UUID(int=1), now=FIXED_NOW))
+    publisher = FakeEventPublisher(failing_event_ids=[failing.id])
+    use_case = PublishOutboxUseCase(uow_factory, publisher, clock)
+
+    for _ in range(5):
+        await use_case.execute()
+
+    assert store.outbox[failing.id].attempts == 0
+    assert store.outbox[failing.id].last_error is not None
+
+
+async def test_an_unpublishable_event_consumes_an_attempt(
+    store: FakeStore,
+    clock: FakeClock,
+    uow_factory: FakeUnitOfWorkFactory,
+) -> None:
+    broken = seed_outbox(store, make_outbox_event(event_id=UUID(int=1), now=FIXED_NOW))
+    publisher = FakeEventPublisher(unpublishable_event_ids=[broken.id])
+    use_case = PublishOutboxUseCase(uow_factory, publisher, clock)
+
+    published = await use_case.execute()
+
+    assert published == 0
+    assert store.outbox[broken.id].attempts == 1
+    assert "payload is not serialisable" in (store.outbox[broken.id].last_error or "")
 
 
 async def test_publish_outbox_returns_zero_when_nothing_is_pending(

@@ -205,19 +205,22 @@ class SqlAlchemyOutboxRepository(OutboxRepositoryProtocol):
         async with _translated("outbox.mark_published"):
             await self._session.execute(statement)
 
-    async def register_failure(self, event_id: UUID, error: str) -> None:
+    async def register_failure(
+        self,
+        event_id: UUID,
+        error: str,
+        *,
+        permanent: bool = True,
+    ) -> None:
         """Record a publication failure without losing the row.
 
-        The text is truncated: broker errors can embed the whole message body.
+        The text is truncated (broker errors can embed the whole message body) and
+        only a permanent failure moves the event towards parking.
         """
-        statement = (
-            update(OutboxModel)
-            .where(OutboxModel.id == event_id)
-            .values(
-                attempts=OutboxModel.attempts + 1,
-                last_error=error[:MAX_ERROR_LENGTH],
-            )
-        )
+        values: dict[str, Any] = {"last_error": error[:MAX_ERROR_LENGTH]}
+        if permanent:
+            values["attempts"] = OutboxModel.attempts + 1
+        statement = update(OutboxModel).where(OutboxModel.id == event_id).values(**values)
         async with _translated("outbox.register_failure"):
             await self._session.execute(statement)
 

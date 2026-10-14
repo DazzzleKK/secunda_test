@@ -37,7 +37,10 @@ from payments.application.ports.unit_of_work import (
 from payments.application.ports.webhook_sender import WebhookSenderProtocol
 from payments.domain.entities import OutboxEvent, Payment
 from payments.domain.enums import Currency
-from payments.domain.exceptions import PaymentGatewayUnavailableError
+from payments.domain.exceptions import (
+    EventPayloadInvalidError,
+    PaymentGatewayUnavailableError,
+)
 from payments.domain.value_objects import IdempotencyKey, Money, PaymentOutcome, WebhookTarget
 
 FIXED_NOW = datetime(2024, 5, 1, 12, 0, tzinfo=UTC)
@@ -271,13 +274,19 @@ class FakeOutboxRepository(OutboxRepositoryProtocol):
         if stored is not None:
             self._store.outbox[event_id] = replace(stored, published_at=now)
 
-    async def register_failure(self, event_id: UUID, error: str) -> None:
-        """Bump attempts and store the error of the stored event."""
+    async def register_failure(
+        self,
+        event_id: UUID,
+        error: str,
+        *,
+        permanent: bool = True,
+    ) -> None:
+        """Store the error; only a permanent failure bumps the attempts."""
         stored = self._store.outbox.get(event_id)
-        if stored is not None:
-            self._store.outbox[event_id] = replace(
-                stored, attempts=stored.attempts + 1, last_error=error
-            )
+        if stored is None:
+            return
+        attempts = stored.attempts + 1 if permanent else stored.attempts
+        self._store.outbox[event_id] = replace(stored, attempts=attempts, last_error=error)
 
     async def oldest_unpublished_age(self) -> timedelta | None:
         """Return the age of the oldest unpublished event, or None."""
@@ -398,16 +407,24 @@ class FakePaymentGateway(PaymentGatewayProtocol):
 
 
 class FakeEventPublisher(EventPublisherProtocol):
-    """A publisher double that can reject selected events."""
+    """A publisher double that can fail events in two different ways."""
 
-    def __init__(self, *, failing_event_ids: Sequence[UUID] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        failing_event_ids: Sequence[UUID] = (),
+        unpublishable_event_ids: Sequence[UUID] = (),
+    ) -> None:
         self._failing = set(failing_event_ids)
+        self._unpublishable = set(unpublishable_event_ids)
         self.published: list[UUID] = []
 
     async def publish(self, event: OutboxEvent) -> None:
         """Record the event or fail as configured."""
+        if event.id in self._unpublishable:
+            raise EventPayloadInvalidError(event.id, reason="payload is not serialisable")
         if event.id in self._failing:
-            raise RuntimeError(f"broker rejected event {event.id}")
+            raise RuntimeError(f"broker is unreachable for event {event.id}")
         self.published.append(event.id)
 
 

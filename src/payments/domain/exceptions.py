@@ -176,6 +176,24 @@ class PaymentNotFinalizedError(PaymentsDomainError):
         self.payment_id = payment_id
 
 
+class EventPayloadInvalidError(PaymentsDomainError):
+    """An outbox event can never be published: its payload is not serialisable.
+
+    This is the only *permanent* publication failure. A broker that is merely
+    unreachable must never consume the publication attempts of healthy events.
+    """
+
+    code = "event_payload_invalid"
+    default_message = "Outbox event payload is not publishable"
+
+    def __init__(self, event_id: UUID, reason: str | None = None) -> None:
+        details: dict[str, Any] = {"event_id": str(event_id)}
+        if reason is not None:
+            details["reason"] = reason
+        super().__init__(reason, details=details)
+        self.event_id = event_id
+
+
 class PaymentNotVisibleError(PaymentsDomainError):
     """The winner of an idempotency race is committed but still unreadable.
 
@@ -192,6 +210,7 @@ class PaymentNotVisibleError(PaymentsDomainError):
 
 
 __all__ = [
+    "EventPayloadInvalidError",
     "IdempotencyConflictError",
     "InvalidAmountError",
     "InvalidCurrencyError",

@@ -129,7 +129,7 @@ async def test_register_failure_keeps_the_event_retryable(uow_factory) -> None:
     assert fetched[0].last_error == "broker is down"
 
 
-async def test_events_are_parked_after_too_many_failed_publications(uow_factory) -> None:
+async def test_events_are_parked_after_too_many_permanent_failures(uow_factory) -> None:
     event = build_outbox_event(build_payment())
 
     async with uow_factory() as uow:
@@ -138,7 +138,7 @@ async def test_events_are_parked_after_too_many_failed_publications(uow_factory)
 
     for _ in range(DEFAULT_MAX_PUBLISH_ATTEMPTS):
         async with uow_factory() as uow:
-            await uow.outbox.register_failure(event.id, "broker is down")
+            await uow.outbox.register_failure(event.id, "payload is broken", permanent=True)
             await uow.commit()
 
     async with uow_factory() as uow:
@@ -146,6 +146,26 @@ async def test_events_are_parked_after_too_many_failed_publications(uow_factory)
         age = await uow.outbox.oldest_unpublished_age()
 
     assert age is not None
+
+
+async def test_transient_failures_never_park_the_event(uow_factory) -> None:
+    event = build_outbox_event(build_payment())
+
+    async with uow_factory() as uow:
+        await uow.outbox.add(event)
+        await uow.commit()
+
+    for _ in range(DEFAULT_MAX_PUBLISH_ATTEMPTS * 3):
+        async with uow_factory() as uow:
+            await uow.outbox.register_failure(event.id, "broker is down", permanent=False)
+            await uow.commit()
+
+    async with uow_factory() as uow:
+        pending = await uow.outbox.fetch_unpublished(10)
+
+    assert [item.id for item in pending] == [event.id]
+    assert pending[0].attempts == 0
+    assert pending[0].last_error == "broker is down"
 
 
 async def test_oldest_unpublished_age_is_none_when_the_outbox_is_empty(uow_factory) -> None:

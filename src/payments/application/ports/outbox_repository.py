@@ -29,8 +29,20 @@ class OutboxRepositoryProtocol(Protocol):
         """Stamp `published_at` after the broker confirmed the message."""
         ...
 
-    async def register_failure(self, event_id: UUID, error: str) -> None:
-        """Record a publication failure: bump attempts and store the error."""
+    async def register_failure(
+        self,
+        event_id: UUID,
+        error: str,
+        *,
+        permanent: bool = True,
+    ) -> None:
+        """Record a publication failure.
+
+        `permanent=True` (a payload the broker will never accept) moves the event
+        towards parking; `permanent=False` (the broker is temporarily unreachable,
+        the publish timed out) only records the reason, because the failure is not
+        the event's fault and must not exhaust the attempts.
+        """
         ...
 
     async def oldest_unpublished_age(self) -> timedelta | None:

@@ -440,7 +440,8 @@ def main() -> int:
     args = parse_args()
     if args.skip_broker_scenario is False:
         print(
-            "Подсказка: чтобы сценарий 6 проходил быстрее, задайте RETRY_DELAYS_MS=1000,2000,3000",
+            "Подсказка: чтобы сценарий 6 проходил быстрее, "
+            "задайте RETRY_DELAYS_MS=1000,2000 (и пересоздайте очереди)",
             flush=True,
         )
     try:

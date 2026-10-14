@@ -54,8 +54,9 @@ from tests.integration.helpers import (
     RabbitMq,
     build_outbox_event,
     build_payment,
-    fetch_queue_messages,
     queue_messages,
+    wait_for_message,
+    wait_for_queue_depth,
     wait_for_queue_messages,
 )
 
@@ -275,8 +276,12 @@ async def test_a_failing_webhook_lands_in_the_dead_letter_queue(
     assert depth >= baseline + 1
     assert await wait_for_events(webhook_sink, 3) == 3
 
-    messages = fetch_queue_messages(rabbitmq.management_url, DLQ_NAME)
-    message = next(item for item in messages if _payload_of(item)["payment_id"] == str(payment_id))
+    message = await wait_for_message(
+        rabbitmq.management_url,
+        DLQ_NAME,
+        predicate=lambda item: _payload_of(item)["payment_id"] == str(payment_id),
+    )
+    assert message is not None, "the parked message of this payment is in the DLQ"
     headers = message["properties"]["headers"]
     assert headers[ATTEMPT_HEADER] == 3
     assert "webhook_delivery_failed" in headers[ERROR_HEADER]
@@ -320,7 +325,8 @@ async def test_the_working_queue_is_drained_by_the_consumer(
     await wait_for_events(webhook_sink, 1)
 
     assert await consumer.wait_for_status(payment_id, "succeeded") is not None
-    assert queue_messages(rabbitmq.management_url, WORK_QUEUE_NAME) == 0
+    depth = await wait_for_queue_depth(rabbitmq.management_url, WORK_QUEUE_NAME, expected=0)
+    assert depth == 0
 
 
 __all__: list[str] = []

@@ -12,13 +12,33 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .import_linter_cache/
+.hypothesis/
+
+# Coverage and test reports
 .coverage
+.coverage.*
+coverage.xml
+junit.xml
+test-results/
 htmlcov/
 
 # Environment / secrets
+# Real values live only in the operator's environment or a local .env; the
+# committed .env.example holds placeholders and is the single exception below.
 .env
 .env.*
 !.env.example
+
+# Logs and scratch files
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Local Docker overrides (a developer's own compose file must not be committed)
+docker-compose.override.yml
+docker-compose.override.yaml
 
 # IDE
 .idea/

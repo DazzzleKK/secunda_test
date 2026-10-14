@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -207,6 +208,46 @@ async def wait_for_queue_messages(
     return depth
 
 
+async def wait_for_queue_depth(
+    management_url: str,
+    queue: str,
+    *,
+    expected: int = 0,
+    timeout: float = 10.0,
+) -> int:
+    """Poll a queue until it holds exactly `expected` messages.
+
+    "The consumer drained the queue" is a statement about the end state, not
+    about one instant: a message another test left behind may still be on its
+    way back from a retry tier when this test starts looking.
+    """
+    deadline = time.monotonic() + timeout
+    depth = queue_messages(management_url, queue)
+    while depth != expected and time.monotonic() < deadline:
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+        depth = queue_messages(management_url, queue)
+    return depth
+
+
+async def wait_for_message(
+    management_url: str,
+    queue: str,
+    *,
+    predicate: Callable[[dict[str, Any]], bool],
+    count: int = 50,
+    timeout: float = 10.0,
+) -> dict[str, Any] | None:
+    """Poll a queue (without removing anything) until a message matches."""
+    deadline = time.monotonic() + timeout
+    while True:
+        for message in fetch_queue_messages(management_url, queue, count=count):
+            if predicate(message):
+                return message
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+
 def api_headers(
     idempotency_key: str | None = "idem-1",
     *,
@@ -268,6 +309,8 @@ __all__ = [
     "queue_document",
     "queue_messages",
     "truncate_all",
+    "wait_for_message",
+    "wait_for_queue_depth",
     "wait_for_queue_messages",
     "wait_for_rabbitmq",
 ]

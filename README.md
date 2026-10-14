@@ -108,10 +108,12 @@ curl -s http://127.0.0.1:8000/api/v1/payments/0f8f... -H 'X-API-Key: local-dev-a
   "status": "succeeded",
   "webhook_url": "https://example.com/hooks/payments",
   "created_at": "2026-01-01T12:00:00Z",
+  "updated_at": "2026-01-01T12:00:04Z",
   "processed_at": "2026-01-01T12:00:04Z",
   "failure_reason": null,
   "webhook_attempts": 1,
-  "webhook_delivered_at": "2026-01-01T12:00:04Z"
+  "webhook_delivered_at": "2026-01-01T12:00:04Z",
+  "webhook_last_error": null
 }
 ```
 
@@ -136,6 +138,12 @@ curl -s http://127.0.0.1:8000/api/v1/payments/0f8f... -H 'X-API-Key: local-dev-a
 uv run python -m payments.cli dlq peek --limit 10     # что запарковано и почему
 uv run python -m payments.cli dlq replay --limit 10   # вернуть в работу с x-attempt=0
 ```
+
+Инструмент ходит в management API брокера, поэтому ему нужны только
+`RABBITMQ_HOST` / `RABBITMQ_USER` / `RABBITMQ_PASSWORD` (по умолчанию
+`localhost`, `guest`/`guest`), а порт management API задаётся флагом
+`--management-port` (по умолчанию 15672). `Settings` не собирается, `API_KEY`
+не требуется — оператор может разбирать DLQ, не имея доступа к API сервиса.
 
 `peek` показывает платёж, номер попытки, причину и тело сообщения; `replay`
 возвращает сообщения в `payments.new` — потребитель обработает их заново, и платёж,
@@ -217,7 +225,9 @@ uv run pytest -m "not integration" -q  # только то, что не треб
 
 Интеграционные тесты поднимают PostgreSQL 16 и RabbitMQ 4 через testcontainers,
 прогоняют Alembic и проверяют HTTP-контракты, репозитории, топологию брокера и
-полный путь платежа до webhook'а в локальный приёмник.
+полный путь платежа до webhook'а в локальный приёмник. Изоляция обязательная:
+каждый тест получает чистые таблицы (фикстура `clean_database`) и пустые очереди
+(`clean_broker`), иначе «до/после» в ассертах зависит от соседнего теста.
 
 Проверки целиком:
 
@@ -230,6 +240,17 @@ make check    # ruff check + ruff format --check + mypy + import-linter + pytest
 ```powershell
 uv run ruff check . ; uv run ruff format --check . ; uv run mypy src ; uv run lint-imports ; uv run pytest -q
 ```
+
+Состояние на последнем прогоне (чистый стек, ветка `main`):
+
+| Шаг | Команда | Результат |
+|---|---|---|
+| Линтеры и типы | `ruff format --check .`, `ruff check .` | чисто |
+| Типы | `uv run mypy src` (strict) | 71 файл без ошибок |
+| Границы слоёв | `uv run lint-imports` | 4 контракта, 0 нарушений |
+| Тесты | `uv run pytest -q` | 228 passed (157 unit + 71 integration) |
+| Стек с нуля | `docker compose --profile demo down -v` → `up -d --build --wait` | код 0, все healthcheck'и зелёные, миграции до `0002_charge_claim` |
+| Демо | `uv run python scripts/demo.py` | 8/8 PASS |
 
 ---
 
@@ -277,8 +298,9 @@ uv run alembic upgrade head
 
 **Подпись вебхука:** `X-Webhook-Signature: HMAC-SHA256(secret, raw_body)` в hex,
 плюс `X-Webhook-Id` (id события — по нему получатель отличает повторную доставку
-от нового события) и `X-Webhook-Attempt` (номер попытки). Пример проверки —
-`scripts/webhook_sink.py`.
+от нового события) и `X-Webhook-Attempt` — номер попытки, **с единицы** (в заголовке
+сообщения `x-attempt` тот же счёт идёт с нуля: `0` — первая обработка). Пример
+проверки подписи — `scripts/webhook_sink.py`.
 
 ---
 
@@ -291,11 +313,13 @@ src/
     ├── domain/                 # Payment, Money, инварианты, fingerprint
     ├── application/            # use cases, DTO, порты (Protocol)
     ├── infrastructure/         # SQLAlchemy, RabbitMQ, httpx, gateway, config
-    └── presentation/           # FastAPI (api/), consumer entrypoint
+    ├── presentation/           # FastAPI (api/), consumer entrypoint
+    └── cli.py                  # операторский инструмент: dlq peek / replay
 migrations/                     # Alembic
 scripts/                        # demo.py, webhook_sink.py
 docs/                           # ARCHITECTURE.md, ADR, brief
 tests/{unit,integration}/
+Dockerfile, docker-compose.yml  # multi-stage образ, стек с миграциями и healthcheck'ами
 ```
 
 ---

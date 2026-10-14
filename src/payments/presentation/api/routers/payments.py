@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
@@ -56,7 +57,7 @@ async def create_payment(
 
     result = await use_case.execute(
         CreatePaymentCommand(
-            amount=request.amount,
+            amount=Decimal(request.amount),
             currency=request.currency,
             description=request.description,
             metadata=request.metadata,

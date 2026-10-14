@@ -52,29 +52,41 @@ class FakePaymentGateway(PaymentGatewayProtocol):
         self._max_delay_seconds = max_delay_ms / 1000
         self._random = random.Random(seed)
         self._decisions: dict[UUID, ChargeResult] = {}
+        self._locks: dict[UUID, asyncio.Lock] = {}
+
+    @property
+    def decisions_made(self) -> int:
+        """How many charges this emulator actually decided."""
+        return len(self._decisions)
 
     async def charge(self, payment: Payment, *, idempotency_key: UUID) -> ChargeResult:
         """Answer with a terminal outcome, the same one for the same idempotency key.
 
         The real gateway keeps the decision of a key it has already seen, and so does
         this emulator: a redelivered event must not charge the customer twice or turn
-        an approved charge into a decline. Only business outcomes are remembered — a
-        technical failure stays retryable.
+        an approved charge into a decline. Same-key calls are serialised, so two
+        concurrent deliveries share one decision instead of racing between the cache
+        read and the write. Only business outcomes are remembered — a technical
+        failure stays retryable.
         """
-        remembered = self._decisions.get(idempotency_key)
-        if remembered is not None:
-            return remembered
+        lock = self._locks.setdefault(idempotency_key, asyncio.Lock())
+        async with lock:
+            remembered = self._decisions.get(idempotency_key)
+            if remembered is not None:
+                return remembered
 
-        await asyncio.sleep(self._random.uniform(self._min_delay_seconds, self._max_delay_seconds))
-        if self._random.random() < self._technical_failure_rate:
-            raise PaymentGatewayUnavailableError(idempotency_key, TIMEOUT_REASON)
-        decision = (
-            ChargeResult(approved=True)
-            if self._random.random() < self._success_rate
-            else ChargeResult(approved=False, reason=DECLINE_REASON)
-        )
-        self._decisions[idempotency_key] = decision
-        return decision
+            await asyncio.sleep(
+                self._random.uniform(self._min_delay_seconds, self._max_delay_seconds)
+            )
+            if self._random.random() < self._technical_failure_rate:
+                raise PaymentGatewayUnavailableError(idempotency_key, TIMEOUT_REASON)
+            decision = (
+                ChargeResult(approved=True)
+                if self._random.random() < self._success_rate
+                else ChargeResult(approved=False, reason=DECLINE_REASON)
+            )
+            self._decisions[idempotency_key] = decision
+            return decision
 
 
 __all__ = ["DECLINE_REASON", "TIMEOUT_REASON", "FakePaymentGateway"]

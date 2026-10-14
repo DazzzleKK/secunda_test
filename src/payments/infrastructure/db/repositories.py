@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn, cast
 from uuid import UUID
 
-from sqlalchemy import Table, func, select, update
+from sqlalchemy import Table, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -132,6 +132,31 @@ class SqlAlchemyPaymentRepository(PaymentRepositoryProtocol):
             .returning(PaymentModel.id)
         )
         async with _translated("payments.apply_outcome"):
+            result = await self._session.execute(statement)
+        return result.scalar_one_or_none() is not None
+
+    async def claim_for_charging(
+        self,
+        payment_id: UUID,
+        *,
+        now: datetime,
+        lease: timedelta,
+    ) -> bool:
+        """Claim the payment for charging with one conditional UPDATE."""
+        statement = (
+            update(PaymentModel)
+            .where(
+                PaymentModel.id == payment_id,
+                PaymentModel.status == PaymentStatus.PENDING.value,
+                or_(
+                    PaymentModel.charge_started_at.is_(None),
+                    PaymentModel.charge_started_at < now - lease,
+                ),
+            )
+            .values(charge_started_at=now, updated_at=now)
+            .returning(PaymentModel.id)
+        )
+        async with _translated("payments.claim_for_charging"):
             result = await self._session.execute(statement)
         return result.scalar_one_or_none() is not None
 

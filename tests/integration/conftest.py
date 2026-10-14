@@ -76,6 +76,8 @@ def rabbitmq() -> Iterator[RabbitMq]:
         endpoints = RabbitMq(
             amqp_url=f"amqp://guest:guest@{host}:{amqp_port}/",
             management_url=f"http://{host}:{management_port}",
+            host=host,
+            port=int(amqp_port),
         )
         wait_for_rabbitmq(endpoints.management_url)
         yield endpoints

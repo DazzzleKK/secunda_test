@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from uuid import UUID
 
 import pytest
 
 from payments.application.dto.payment_created_event import PaymentCreatedEvent
-from payments.application.use_cases.process_payment import DECLINED_REASON, ProcessPaymentUseCase
+from payments.application.use_cases.process_payment import (
+    CHARGE_LEASE,
+    DECLINED_REASON,
+    ProcessPaymentUseCase,
+)
 from payments.domain.entities import Payment
 from payments.domain.enums import PaymentStatus
 from payments.domain.exceptions import (
@@ -128,7 +133,44 @@ async def test_process_payment_keeps_the_payment_pending_when_the_gateway_is_una
     assert stored.status is PaymentStatus.PENDING
     assert stored.processed_at is None
     assert stored.failure_reason is None
+    # Only the claim was committed: the status was not touched.
+    assert uow_factory.commit_count == 1
+
+
+async def test_a_claimed_payment_is_not_charged_again(
+    store: FakeStore,
+    clock: FakeClock,
+    uow_factory: FakeUnitOfWorkFactory,
+) -> None:
+    """The claim, not the status guard, keeps two copies from charging twice."""
+    seed_payment(store, make_payment(payment_id=PAYMENT_ID))
+    store.claims[PAYMENT_ID] = clock.now()
+    gateway = FakePaymentGateway()
+    use_case = ProcessPaymentUseCase(uow_factory, gateway, clock)
+
+    result = await use_case.execute(an_event())
+
+    assert result.applied is False
+    assert result.status is PaymentStatus.PENDING
+    assert gateway.calls == []
     assert uow_factory.commit_count == 0
+
+
+async def test_a_charge_can_be_retried_after_the_claim_lease_expires(
+    store: FakeStore,
+    clock: FakeClock,
+    uow_factory: FakeUnitOfWorkFactory,
+) -> None:
+    """A crash between the charge and the status update must not strand a payment."""
+    seed_payment(store, make_payment(payment_id=PAYMENT_ID))
+    store.claims[PAYMENT_ID] = clock.now() - CHARGE_LEASE - timedelta(seconds=1)
+    gateway = FakePaymentGateway()
+    use_case = ProcessPaymentUseCase(uow_factory, gateway, clock)
+
+    result = await use_case.execute(an_event())
+
+    assert result.applied is True
+    assert len(gateway.calls) == 1
 
 
 async def test_process_payment_raises_not_found_for_an_unknown_payment(

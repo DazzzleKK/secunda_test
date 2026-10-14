@@ -125,6 +125,7 @@ class FakeStore:
 
     payments: dict[UUID, Payment] = field(default_factory=dict)
     outbox: dict[UUID, OutboxEvent] = field(default_factory=dict)
+    claims: dict[UUID, datetime] = field(default_factory=dict)
 
 
 def seed_payment(store: FakeStore, payment: Payment) -> Payment:
@@ -226,6 +227,23 @@ class FakePaymentRepository(PaymentRepositoryProtocol):
         if stored is None:
             return False
         return stored.apply_outcome(outcome, now=self._clock.now())
+
+    async def claim_for_charging(
+        self,
+        payment_id: UUID,
+        *,
+        now: datetime,
+        lease: timedelta,
+    ) -> bool:
+        """Claim the payment unless it is final or the lease is still held."""
+        stored = self._store.payments.get(payment_id)
+        if stored is None or stored.is_final:
+            return False
+        claimed_at = self._store.claims.get(payment_id)
+        if claimed_at is not None and claimed_at > now - lease:
+            return False
+        self._store.claims[payment_id] = now
+        return True
 
     async def register_webhook_attempt(
         self,

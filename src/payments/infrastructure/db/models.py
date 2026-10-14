@@ -80,6 +80,9 @@ class PaymentModel(Base):
         DateTime(timezone=True), nullable=True
     )
     webhook_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    charge_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

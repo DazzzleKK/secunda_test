@@ -29,6 +29,7 @@ from payments.infrastructure.system import SystemClock
 logger = logging.getLogger(__name__)
 
 ERROR_RETRY_PAUSE_SECONDS: Final[float] = 5.0
+BROKER_SHUTDOWN_TIMEOUT_SECONDS: Final[float] = 5.0
 STANDALONE_TOPOLOGY_ATTEMPTS: Final[int] = 3
 STANDALONE_TOPOLOGY_PAUSE_SECONDS: Final[float] = 1.0
 
@@ -100,7 +101,10 @@ async def main() -> None:
         logger.info("standalone outbox relay started")
         await OutboxRelay(use_case, settings).run(stop)
     finally:
-        await broker.stop()
+        try:
+            await asyncio.wait_for(broker.stop(), timeout=BROKER_SHUTDOWN_TIMEOUT_SECONDS)
+        except Exception:
+            logger.warning("broker did not stop cleanly, continuing the shutdown")
         await engine.dispose()
 
 

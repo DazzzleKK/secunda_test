@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from uuid import UUID
 
 from payments.application.dto.charge_result import ChargeResult
@@ -20,6 +21,13 @@ from payments.domain.exceptions import (
 from payments.domain.value_objects import PaymentOutcome
 
 DECLINED_REASON = "gateway declined the payment"
+CHARGE_LEASE = timedelta(minutes=5)
+"""How long a claim on a payment is trusted.
+
+Longer than any realistic gateway call, short enough that a payment whose charging
+started and whose outcome was never stored becomes chargeable again instead of
+staying pending forever.
+"""
 
 
 class ProcessPaymentUseCase:
@@ -27,9 +35,11 @@ class ProcessPaymentUseCase:
 
     The gateway call happens between two short transactions: the emulated charge
     takes seconds, and holding a transaction (let alone a row lock) for that long
-    would pin a database connection for nothing. Idempotency is provided by the
-    guarded `apply_outcome`, so a duplicate message finds a final payment and
-    becomes a no-op.
+    would pin a database connection for nothing.
+
+    Before charging, the payment is claimed with one conditional `UPDATE`. This is
+    what keeps two copies of the same event from both calling the gateway: the
+    guarded `apply_outcome` alone protects the status, not the money.
     """
 
     def __init__(
@@ -51,6 +61,15 @@ class ProcessPaymentUseCase:
         """
         payment = await self._load(event.payment_id)
         if payment.is_final:
+            return ProcessPaymentResult(
+                payment_id=payment.id,
+                status=payment.status,
+                applied=False,
+            )
+
+        if not await self._claim(payment.id):
+            # Another worker is charging this payment right now, or finished just
+            # before this copy arrived. Doing nothing is the correct answer.
             return ProcessPaymentResult(
                 payment_id=payment.id,
                 status=payment.status,
@@ -79,6 +98,18 @@ class ProcessPaymentUseCase:
             raise PaymentNotFoundError(payment_id)
         return payment
 
+    async def _claim(self, payment_id: UUID) -> bool:
+        """Take the payment for charging; False when someone else holds it."""
+        async with self._uow_factory() as uow:
+            claimed = await uow.payments.claim_for_charging(
+                payment_id,
+                now=self._clock.now(),
+                lease=CHARGE_LEASE,
+            )
+            if claimed:
+                await uow.commit()
+        return claimed
+
     async def _charge(self, payment: Payment) -> ChargeResult:
         try:
             return await self._gateway.charge(payment, idempotency_key=payment.id)
@@ -88,4 +119,4 @@ class ProcessPaymentUseCase:
             ) from exc
 
 
-__all__ = ["DECLINED_REASON", "ProcessPaymentUseCase"]
+__all__ = ["CHARGE_LEASE", "DECLINED_REASON", "ProcessPaymentUseCase"]

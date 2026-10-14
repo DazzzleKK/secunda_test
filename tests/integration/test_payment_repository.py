@@ -20,6 +20,8 @@ from tests.integration.helpers import FIXED_NOW, build_payment, count_rows
 
 pytestmark = pytest.mark.integration
 
+CLAIM_LEASE = timedelta(minutes=5)
+
 
 async def test_add_if_absent_stores_the_payment(uow_factory, session) -> None:
     payment = build_payment()
@@ -193,6 +195,64 @@ async def test_register_webhook_attempt_keeps_the_first_delivery_time(uow_factor
     assert stored is not None
     assert stored.webhook_attempts == 2
     assert stored.webhook_delivered_at == FIXED_NOW
+
+
+async def test_claim_for_charging_is_exclusive(uow_factory) -> None:
+    payment = build_payment()
+
+    async with uow_factory() as uow:
+        await uow.payments.add_if_absent(payment)
+        await uow.commit()
+
+    async with uow_factory() as uow:
+        first = await uow.payments.claim_for_charging(payment.id, now=FIXED_NOW, lease=CLAIM_LEASE)
+        await uow.commit()
+
+    async with uow_factory() as uow:
+        second = await uow.payments.claim_for_charging(
+            payment.id, now=FIXED_NOW + timedelta(seconds=1), lease=CLAIM_LEASE
+        )
+        await uow.commit()
+
+    assert first is True
+    assert second is False
+
+
+async def test_a_claim_expires_after_its_lease(uow_factory) -> None:
+    payment = build_payment()
+
+    async with uow_factory() as uow:
+        await uow.payments.add_if_absent(payment)
+        await uow.commit()
+
+    async with uow_factory() as uow:
+        await uow.payments.claim_for_charging(payment.id, now=FIXED_NOW, lease=CLAIM_LEASE)
+        await uow.commit()
+
+    async with uow_factory() as uow:
+        reclaimed = await uow.payments.claim_for_charging(
+            payment.id, now=FIXED_NOW + CLAIM_LEASE + timedelta(seconds=1), lease=CLAIM_LEASE
+        )
+        await uow.commit()
+
+    assert reclaimed is True
+
+
+async def test_a_final_payment_cannot_be_claimed(uow_factory) -> None:
+    payment = build_payment()
+
+    async with uow_factory() as uow:
+        await uow.payments.add_if_absent(payment)
+        await uow.payments.apply_outcome(payment.id, PaymentOutcome(status=PaymentStatus.SUCCEEDED))
+        await uow.commit()
+
+    async with uow_factory() as uow:
+        claimed = await uow.payments.claim_for_charging(
+            payment.id, now=FIXED_NOW, lease=CLAIM_LEASE
+        )
+        await uow.commit()
+
+    assert claimed is False
 
 
 async def test_amount_check_constraint_is_translated_to_a_domain_error(session) -> None:

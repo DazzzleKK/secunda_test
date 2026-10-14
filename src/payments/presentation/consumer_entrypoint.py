@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 READINESS_FILE_ENV = "CONSUMER_READINESS_FILE"
 READINESS_FILE_NAME = "payments-consumer-ready"
+BROKER_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
 async def main() -> None:
@@ -95,7 +96,10 @@ async def main() -> None:
     finally:
         logger.info("consumer stopping")
         readiness.unlink(missing_ok=True)
-        await broker.stop()
+        try:
+            await asyncio.wait_for(broker.stop(), timeout=BROKER_SHUTDOWN_TIMEOUT_SECONDS)
+        except Exception:
+            logger.warning("broker did not stop cleanly, continuing the shutdown")
         await http_client.aclose()
         await engine.dispose()
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
 import pytest
@@ -79,6 +80,31 @@ async def test_the_same_idempotency_key_returns_the_same_decision() -> None:
     second = await gateway.charge(make_payment(), idempotency_key=PAYMENT_ID)
 
     assert second == first
+
+
+async def test_concurrent_calls_with_one_key_decide_once() -> None:
+    """Two copies of the same event must not produce two decisions."""
+    gateway = _gateway(success_rate=0.5)
+
+    results = await asyncio.gather(
+        gateway.charge(make_payment(), idempotency_key=PAYMENT_ID),
+        gateway.charge(make_payment(), idempotency_key=PAYMENT_ID),
+        gateway.charge(make_payment(), idempotency_key=PAYMENT_ID),
+    )
+
+    assert len({result.approved for result in results}) == 1
+    assert gateway.decisions_made == 1
+
+
+async def test_different_keys_are_decided_independently() -> None:
+    gateway = _gateway(success_rate=0.5)
+
+    await asyncio.gather(
+        gateway.charge(make_payment(), idempotency_key=UUID(int=1)),
+        gateway.charge(make_payment(), idempotency_key=UUID(int=2)),
+    )
+
+    assert gateway.decisions_made == 2
 
 
 async def test_an_approved_charge_is_never_turned_into_a_decline() -> None:

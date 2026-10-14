@@ -63,6 +63,8 @@ class RabbitMq:
 
     amqp_url: str
     management_url: str
+    host: str
+    port: int
 
 
 def wait_for_rabbitmq(

@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager, suppress
 from dishka import make_async_container
 from dishka.integrations.fastapi import setup_dishka
 from fastapi import FastAPI
+from faststream.rabbit import RabbitBroker
 
 from payments.infrastructure.config import Settings, get_settings
 from payments.infrastructure.messaging.broker import build_broker
@@ -32,7 +33,34 @@ logger = logging.getLogger(__name__)
 
 API_TOPOLOGY_ATTEMPTS = 3
 API_TOPOLOGY_PAUSE_SECONDS = 1.0
+API_TOPOLOGY_BUDGET_SECONDS = 4.0
 RELAY_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+BROKER_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+TASK_CANCEL_TIMEOUT_SECONDS = 5.0
+
+
+async def _stop_broker(broker: RabbitBroker) -> None:
+    """Close the broker connection with a bound: a dead broker must not block exit.
+
+    With `fail_fast=False` the broker keeps retrying in the background, and stopping
+    a connection that was never established can wait for the next attempt.
+    """
+    try:
+        await asyncio.wait_for(broker.stop(), timeout=BROKER_SHUTDOWN_TIMEOUT_SECONDS)
+    except Exception:
+        logger.warning("broker did not stop cleanly, continuing the shutdown")
+
+
+def _log_broker_start(task: asyncio.Task[None]) -> None:
+    """Report the background connection attempt without failing the process."""
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.error("broker connection failed permanently: %s", error)
+    else:
+        logger.info("broker connected")
+
 
 DESCRIPTION = """
 Asynchronous payment processing service.
@@ -55,21 +83,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         stop = asyncio.Event()
         relay_task: asyncio.Task[None] | None = None
+        broker_task: asyncio.Task[None] | None = None
         topology = Topology(retry_delays_ms=resolved_settings.retry_delays_ms)
         try:
             # The publisher declares the topology itself: a message sent to an
             # exchange with no bound queue would be dropped, and the consumer may
-            # not be running at all.
-            await declare_topology_with_retry(
-                resolved_settings.rabbitmq_url,
-                topology,
-                attempts=API_TOPOLOGY_ATTEMPTS,
-                pause_seconds=API_TOPOLOGY_PAUSE_SECONDS,
+            # not be running at all. The whole attempt is bounded: the API must
+            # start and accept payments even when the broker is down for good.
+            await asyncio.wait_for(
+                declare_topology_with_retry(
+                    resolved_settings.rabbitmq_url,
+                    topology,
+                    attempts=API_TOPOLOGY_ATTEMPTS,
+                    pause_seconds=API_TOPOLOGY_PAUSE_SECONDS,
+                ),
+                timeout=API_TOPOLOGY_BUDGET_SECONDS,
             )
         except Exception:
             logger.exception("broker topology is not ready; the outbox keeps the events")
         try:
-            await broker.start()
+            # `start()` waits for the connection, so it runs in the background: the
+            # API must answer 202 while the broker is down — that is what the outbox
+            # is for. Publishing fails until the connection is up, the relay records
+            # the failure and the events stay in the outbox.
+            broker_task = asyncio.create_task(broker.start(), name="broker-start")
+            broker_task.add_done_callback(_log_broker_start)
         except Exception:
             logger.exception("broker connection failed; the relay will keep retrying")
         try:
@@ -79,14 +117,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             stop.set()
             if relay_task is not None:
-                # Let the loop finish the batch it is publishing before cancelling.
-                try:
+                # Let the loop finish the batch it is publishing, then cancel it —
+                # and bound the cancellation as well: a task blocked inside the
+                # broker client must not keep the process from exiting.
+                with suppress(TimeoutError):
                     await asyncio.wait_for(relay_task, timeout=RELAY_SHUTDOWN_TIMEOUT_SECONDS)
-                except TimeoutError:
+                if not relay_task.done():
                     relay_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await relay_task
-            await broker.stop()
+                    with suppress(asyncio.CancelledError, TimeoutError):
+                        await asyncio.wait_for(relay_task, timeout=TASK_CANCEL_TIMEOUT_SECONDS)
+            await _stop_broker(broker)
+            if broker_task is not None and not broker_task.done():
+                broker_task.cancel()
+                with suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(broker_task, timeout=TASK_CANCEL_TIMEOUT_SECONDS)
             await container.close()
 
     app = FastAPI(

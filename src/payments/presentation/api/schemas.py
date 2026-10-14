@@ -8,35 +8,45 @@ metadata invariants).
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
-from typing import Annotated, Any
+from decimal import Decimal, InvalidOperation
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from payments.application.dto.payment_dto import PaymentDto
 from payments.domain.enums import Currency, PaymentStatus
 
 MAX_DESCRIPTION_LENGTH = 1024
-MAX_AMOUNT_DIGITS = 18
-AMOUNT_SCALE = 2
-
-Amount = Annotated[
-    Decimal,
-    Field(gt=0, max_digits=MAX_AMOUNT_DIGITS, decimal_places=AMOUNT_SCALE),
-]
+MAX_AMOUNT_LENGTH = 64
 
 
 class PaymentCreateRequest(BaseModel):
-    """Body of `POST /api/v1/payments`."""
+    """Body of `POST /api/v1/payments`.
+
+    Money travels as a **string**: a JSON number would go through a float before
+    reaching the domain and could change the value (e.g. 100000000000000.01 becomes
+    100000000000000.02). The domain value object still owns the real invariants —
+    positive, exactly two fraction digits, at most 18 digits.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    amount: Amount
+    amount: str = Field(min_length=1, max_length=MAX_AMOUNT_LENGTH, examples=["100.50"])
     currency: Currency
     description: str = Field(default="", max_length=MAX_DESCRIPTION_LENGTH)
     metadata: dict[str, Any] = Field(default_factory=dict)
     webhook_url: str = Field(min_length=1)
+
+    @field_validator("amount", mode="after")
+    @classmethod
+    def _must_be_a_decimal_string(cls, value: str) -> str:
+        """Reject anything that is not a decimal string (numbers included)."""
+        try:
+            Decimal(value)
+        except InvalidOperation as exc:
+            raise ValueError('amount must be a decimal string, for example "100.50"') from exc
+        return value
 
 
 class PaymentCreateResponse(BaseModel):

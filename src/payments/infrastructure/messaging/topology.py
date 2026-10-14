@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 TOPOLOGY_DECLARATION_ATTEMPTS: Final[int] = 5
 TOPOLOGY_DECLARATION_PAUSE_SECONDS: Final[float] = 2.0
+TOPOLOGY_CONNECT_TIMEOUT_SECONDS: Final[float] = 2.0
 
 EXCHANGE_NAME: Final[str] = "payments"
 RETRY_EXCHANGE_NAME: Final[str] = "payments.retry"
@@ -126,8 +127,12 @@ async def declare_topology(amqp_url: str, topology: Topology) -> None:
     FastStream declares the working queue and the exchanges it publishes to itself,
     but the retry tiers and the dead letter queue have no consumer, so they are
     declared here, explicitly, with the arguments that make the ladder work.
+
+    A plain (non-robust) connection is used deliberately: `connect_robust` retries
+    in the background forever, so an unreachable broker would hang the caller
+    instead of failing the attempt and letting our own retry loop count it.
     """
-    connection = await aio_pika.connect_robust(amqp_url)
+    connection = await aio_pika.connect(amqp_url, timeout=TOPOLOGY_CONNECT_TIMEOUT_SECONDS)
     try:
         channel = await connection.channel()
         try:

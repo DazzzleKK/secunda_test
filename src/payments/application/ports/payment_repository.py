@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
@@ -39,6 +39,23 @@ class PaymentRepositoryProtocol(Protocol):
 
         Returns False when the payment is already final, which keeps a duplicate
         delivery from touching the stored status.
+        """
+        ...
+
+    async def claim_for_charging(
+        self,
+        payment_id: UUID,
+        *,
+        now: datetime,
+        lease: timedelta,
+    ) -> bool:
+        """Take the payment for charging, atomically.
+
+        Returns False when another worker already holds the claim or the payment is
+        final, so two copies of the same event cannot both call the gateway. The
+        claim is a lease: after `lease` a payment whose charging started but whose
+        outcome was never stored becomes claimable again, otherwise a crash between
+        the charge and the status update would leave it pending forever.
         """
         ...
 

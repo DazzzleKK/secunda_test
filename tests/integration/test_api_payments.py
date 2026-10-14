@@ -99,6 +99,7 @@ async def test_get_with_a_malformed_id_returns_422(api_client) -> None:
 
 @pytest.mark.parametrize("amount", ["0.00", "-5.00", "10.555"])
 async def test_invalid_amounts_are_rejected(api_client, amount: str) -> None:
+    """Money invariants belong to the domain, so the code is `invalid_amount`."""
     response = await api_client.post(
         PAYMENTS_URL,
         json=payment_body(amount=amount),
@@ -106,7 +107,32 @@ async def test_invalid_amounts_are_rejected(api_client, amount: str) -> None:
     )
 
     assert response.status_code == 422
+    assert response.json()["code"] == "invalid_amount"
+
+
+async def test_a_numeric_amount_is_rejected(api_client) -> None:
+    """Money must travel as a string: a JSON number goes through a float."""
+    body = payment_body() | {"amount": 100.5}
+
+    response = await api_client.post(PAYMENTS_URL, json=body, headers=api_headers("key-number"))
+
+    assert response.status_code == 422
     assert response.json()["code"] == "validation_error"
+
+
+async def test_a_large_amount_keeps_its_exact_value(api_client) -> None:
+    created = await api_client.post(
+        PAYMENTS_URL,
+        json=payment_body(amount="100000000000000.01"),
+        headers=api_headers("key-exact"),
+    )
+
+    assert created.status_code == 202
+    payment_id = created.json()["payment_id"]
+
+    stored = await api_client.get(f"{PAYMENTS_URL}/{payment_id}", headers=api_headers())
+
+    assert stored.json()["amount"] == "100000000000000.01"
 
 
 async def test_amount_with_one_fraction_digit_is_normalised(api_client) -> None:
@@ -156,8 +182,10 @@ async def test_unknown_body_fields_are_rejected(api_client) -> None:
 async def test_openapi_documents_headers_and_error_responses(api_client) -> None:
     document = (await api_client.get("/openapi.json")).json()
     operation = document["paths"][PAYMENTS_URL]["post"]
+    schemas = document["components"]["schemas"]
 
     parameter_names = {parameter["name"] for parameter in operation["parameters"]}
 
     assert {"X-API-Key", "Idempotency-Key"} <= parameter_names
     assert {"400", "401", "409", "422", "503"} <= set(operation["responses"])
+    assert schemas["PaymentCreateRequest"]["properties"]["amount"]["type"] == "string"

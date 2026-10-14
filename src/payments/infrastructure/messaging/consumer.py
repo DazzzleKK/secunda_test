@@ -24,7 +24,7 @@ from typing import Any, Final
 from uuid import UUID
 
 from faststream import AckPolicy
-from faststream.rabbit import RabbitBroker, RabbitMessage
+from faststream.rabbit import RabbitBroker, RabbitExchange, RabbitMessage
 
 from payments.application.dto.payment_created_event import PaymentCreatedEvent
 from payments.application.use_cases.deliver_webhook import DeliverWebhookUseCase
@@ -37,11 +37,12 @@ from payments.infrastructure.messaging.topology import (
     FAILED_AT_HEADER,
     Topology,
 )
-from shared.exceptions import AppError
+from shared.exceptions import AppError, InfraError
 
 logger = logging.getLogger(__name__)
 
 MAX_STORED_ERROR_LENGTH: Final[int] = 500
+PUBLISH_TIMEOUT_SECONDS: Final[float] = 5.0
 
 
 class InvalidEventPayloadError(Exception):
@@ -112,6 +113,12 @@ class PaymentConsumer:
             )
             await self._park(message, reason=exc.message, attempt=event.attempt)
             return
+        except InfraError as exc:
+            # The database or the broker is in trouble, not this payment: deferring
+            # keeps the work without burning one of the three attempts, so a short
+            # outage cannot park healthy payments in the DLQ.
+            await self._defer(message, exc, event)
+            return
         except Exception as exc:  # every failure must be routed, not lost
             await self._retry(message, exc, event)
             return
@@ -150,24 +157,76 @@ class PaymentConsumer:
                 "error": reason,
             },
         )
-        await self._broker.publish(
-            _body_of(message),
+        await self._republish(
+            message,
             exchange=self._topology.retry_exchange,
             routing_key=target.routing_key,
             headers=_forwarded_headers(message, attempt=event.attempt + 1, reason=reason),
-            persist=True,
         )
-        await message.ack()
+
+    async def _defer(
+        self,
+        message: RabbitMessage,
+        exc: BaseException,
+        event: PaymentCreatedEvent,
+    ) -> None:
+        """Send the message to the slowest tier without consuming an attempt."""
+        target = self._topology.retry_tiers[-1]
+        reason = _describe(exc)
+        logger.warning(
+            "infrastructure failure, deferring the message",
+            extra={
+                "payment_id": str(event.payment_id),
+                "event_id": str(event.event_id),
+                "delay_ms": target.delay_ms,
+                "error": reason,
+            },
+        )
+        await self._republish(
+            message,
+            exchange=self._topology.retry_exchange,
+            routing_key=target.routing_key,
+            headers=_forwarded_headers(message, attempt=event.attempt, reason=reason),
+        )
 
     async def _park(self, message: RabbitMessage, *, reason: str, attempt: int) -> None:
         """Send the message to the dead letter queue and confirm the original."""
-        await self._broker.publish(
-            _body_of(message),
+        await self._republish(
+            message,
             exchange=self._topology.dlx_exchange,
             routing_key=DLQ_ROUTING_KEY,
             headers=_forwarded_headers(message, attempt=attempt, reason=reason),
-            persist=True,
         )
+
+    async def _republish(
+        self,
+        message: RabbitMessage,
+        *,
+        exchange: RabbitExchange,
+        routing_key: str,
+        headers: dict[str, Any],
+    ) -> None:
+        """Republish the message and confirm the original only if that worked.
+
+        Publishing is bounded by a timeout: a broker that stopped answering must not
+        hold the consumer slot forever. When the republish fails the message stays
+        unacked, so the broker redelivers it instead of losing it.
+        """
+        try:
+            await self._broker.publish(
+                _body_of(message),
+                exchange=exchange,
+                routing_key=routing_key,
+                headers=headers,
+                persist=True,
+                timeout=PUBLISH_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.error(
+                "could not republish the message, it stays unacked for redelivery: %s",
+                _describe(exc),
+            )
+            return
         await message.ack()
 
 
